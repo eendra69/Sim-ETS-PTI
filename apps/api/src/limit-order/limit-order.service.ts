@@ -113,6 +113,14 @@ export class LimitOrderService implements OnModuleDestroy {
         try {
           return await this.insertOrder(dto, reservation.reservationId);
         } catch (error) {
+          const concurrentlyCreated = await this.findByClientOrderId(
+            dto.participantId,
+            dto.clientOrderId,
+          );
+          if (concurrentlyCreated) {
+            this.assertSamePayload(concurrentlyCreated, dto);
+            return concurrentlyCreated;
+          }
           await this.positionBalanceService.releaseReservation(reservation.reservationId);
           throw error;
         }

@@ -439,6 +439,9 @@ export class PositionBalanceService implements OnModuleDestroy {
     ) {
       throw this.idempotencyConflict();
     }
+    if (reservation.status !== 'ACTIVE') {
+      throw this.inactiveReservationConflict();
+    }
     return reservation;
   }
 
@@ -526,6 +529,9 @@ export class PositionBalanceService implements OnModuleDestroy {
     ) {
       throw this.idempotencyConflict();
     }
+    if (existing.status !== 'ACTIVE') {
+      throw this.inactiveReservationConflict();
+    }
     return { ...existing };
   }
 
@@ -595,6 +601,13 @@ export class PositionBalanceService implements OnModuleDestroy {
     return new BadRequestException({
       code: 'BAL-IDEMPOTENCY-CONFLICT',
       message: 'Order reference was already used with a different reservation payload',
+    });
+  }
+
+  private inactiveReservationConflict(): BadRequestException {
+    return new BadRequestException({
+      code: 'BAL-RESERVATION-NOT-ACTIVE',
+      message: 'Order reference belongs to a reservation that is already terminal',
     });
   }
 

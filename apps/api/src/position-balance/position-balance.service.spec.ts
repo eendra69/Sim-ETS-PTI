@@ -88,4 +88,21 @@ describe('PositionBalanceService', () => {
     expect(retry.reservationId).toBe(first.reservationId);
     expect((await service.getPosition('IND-A', 'PTBAE-IND', 2027)).reservedSell).toBe(10_000);
   });
+
+  it('does not reactivate a released reservation through an order-reference retry', async () => {
+    const command = {
+      participantId: 'IND-A',
+      seriesCode: 'PTBAE-IND',
+      compliancePeriod: 2027,
+      quantity: 10_000,
+      orderReference: 'ORDER-TERMINAL',
+    };
+    const reservation = await service.reserveSell(command);
+    await service.releaseReservation(reservation.reservationId);
+
+    await expect(service.reserveSell(command)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'BAL-RESERVATION-NOT-ACTIVE' }),
+    });
+    expect((await service.getPosition('IND-A', 'PTBAE-IND', 2027)).reservedSell).toBe(0);
+  });
 });
