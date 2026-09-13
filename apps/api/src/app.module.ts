@@ -2,10 +2,12 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { join } from 'node:path';
 import { HealthController } from './health.controller';
+import { GovernanceModule } from './governance/governance.module';
 import { LimitOrderModule } from './limit-order/limit-order.module';
 import { MarketDataModule } from './market-data/market-data.module';
 import { PositionBalanceModule } from './position-balance/position-balance.module';
 import { SettlementModule } from './settlement/settlement.module';
+import { ScenarioModule } from './scenario/scenario.module';
 
 @Module({
   imports: [
@@ -14,9 +16,11 @@ import { SettlementModule } from './settlement/settlement.module';
       envFilePath: [join(process.cwd(), '.env'), join(process.cwd(), '../../.env')],
     }),
     PositionBalanceModule,
+    GovernanceModule,
     LimitOrderModule,
     MarketDataModule,
     SettlementModule,
+    ScenarioModule,
   ],
   controllers: [HealthController],
 })

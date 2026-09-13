@@ -111,6 +111,65 @@ interface SettlementBundle {
   finalized: boolean;
 }
 
+interface GovernedRuleset {
+  rulesetId: string;
+  seriesCode: string;
+  compliancePeriod: number;
+  version: number;
+  status: 'DRAFT' | 'APPROVED' | 'ACTIVE' | 'RETIRED';
+  referencePrice: number;
+  minimumPrice: number;
+  maximumPrice: number;
+  tickSize: number;
+  lotSize: number;
+  marketSessionId: string;
+  sellCapPercentage: number;
+  settlementFinality: 'DVP_SETTLED' | 'SRUK_ACK_RECONCILED';
+  surveillancePriceDeviationBps: number;
+  surveillanceVolumeThreshold: number;
+  repeatedCancelThreshold: number;
+}
+
+interface MarketSession {
+  sessionId: string;
+  status: 'OPEN' | 'HALTED' | 'CLOSED';
+  rulesetId: string;
+}
+
+interface AuditEvent {
+  auditEventId: string;
+  eventSequence: number;
+  eventType: string;
+  entityType: string;
+  actorId: string;
+  correlationId: string;
+  occurredAt: string;
+}
+
+interface SurveillanceAlert {
+  alertId: string;
+  alertSequence: number;
+  alertType: string;
+  severity: string;
+  description: string;
+  status: string;
+}
+
+interface ScenarioDefinition {
+  scenarioId: string;
+  name: string;
+  rulesetId: string;
+}
+
+interface ScenarioRun {
+  runId: string;
+  scenarioId: string;
+  runNumber: number;
+  resultHash: string;
+  isDeterministicMatch?: boolean;
+  result: { finalPositions: Record<string, number>; events: unknown[] };
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000/api/v1';
 const number = new Intl.NumberFormat('id-ID');
 const money = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
@@ -152,6 +211,12 @@ export function App() {
     },
   });
   const [settlements, setSettlements] = useState<SettlementBundle[]>([]);
+  const [rulesets, setRulesets] = useState<GovernedRuleset[]>([]);
+  const [marketSession, setMarketSession] = useState<MarketSession>();
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [alerts, setAlerts] = useState<SurveillanceAlert[]>([]);
+  const [scenarios, setScenarios] = useState<ScenarioDefinition[]>([]);
+  const [lastScenarioRun, setLastScenarioRun] = useState<ScenarioRun>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -166,13 +231,19 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements] = await Promise.all([
+      const currentRuleset = await api<GovernedRuleset>('/market-rulesets/current');
+      const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements, nextRulesets, nextSession, nextAudit, nextAlerts, nextScenarios] = await Promise.all([
         api<PositionSnapshot[]>('/positions?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<TriggerBook>('/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<MarketDataSnapshot>('/market-data/snapshot?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<SettlementBundle[]>('/settlements?seriesCode=PTBAE-IND&compliancePeriod=2027'),
+        api<GovernedRuleset[]>('/rulesets?seriesCode=PTBAE-IND&compliancePeriod=2027'),
+        api<MarketSession>(`/market-sessions/${currentRuleset.marketSessionId}`),
+        api<AuditEvent[]>('/audit-events?limit=30'),
+        api<SurveillanceAlert[]>('/surveillance-alerts?limit=30'),
+        api<ScenarioDefinition[]>('/scenarios'),
       ]);
       setPositions(nextPositions);
       setBook(nextBook);
@@ -180,6 +251,11 @@ export function App() {
       setTriggerBook(nextTriggerBook);
       setMarketData(nextMarketData);
       setSettlements(nextSettlements);
+      setRulesets(nextRulesets);
+      setMarketSession(nextSession);
+      setAuditEvents(nextAudit);
+      setAlerts(nextAlerts);
+      setScenarios(nextScenarios);
       setError(undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tidak dapat memuat data');
@@ -318,6 +394,72 @@ export function App() {
     return 'No action';
   }
 
+  async function sessionAction(action: 'open' | 'halt' | 'resume' | 'close') {
+    if (!marketSession) return;
+    setBusy(true); setError(undefined); setNotice(undefined);
+    try {
+      await api(`/market-sessions/${marketSession.sessionId}/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idempotencyKey: `WEB-SESSION-${action}-${Date.now()}`, actorId: 'WEB-ADMIN', permissionContext: 'MARKET_ADMIN' }),
+      });
+      setNotice(`Market session berhasil di-${action}.`);
+      await refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Perubahan session gagal'); }
+    finally { setBusy(false); }
+  }
+
+  async function createRulesetDraft() {
+    const active = rulesets.find((item) => item.status === 'ACTIVE');
+    if (!active) return;
+    const version = Math.max(...rulesets.map((item) => item.version)) + 1;
+    setBusy(true); setError(undefined); setNotice(undefined);
+    try {
+      await api('/rulesets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        idempotencyKey: `WEB-RULESET-CREATE-${version}-${Date.now()}`, actorId: 'WEB-ADMIN', permissionContext: 'MARKET_ADMIN',
+        rulesetId: `PTBAE-IND-2027-PROTOTYPE-V${version}`, seriesCode: active.seriesCode,
+        compliancePeriod: active.compliancePeriod, version, referencePrice: active.referencePrice,
+        minimumPrice: active.minimumPrice, maximumPrice: active.maximumPrice, tickSize: active.tickSize,
+        lotSize: active.lotSize, marketSessionId: active.marketSessionId,
+        sellCapPercentage: active.sellCapPercentage, settlementFinality: active.settlementFinality,
+        surveillancePriceDeviationBps: active.surveillancePriceDeviationBps,
+        surveillanceVolumeThreshold: active.surveillanceVolumeThreshold,
+        repeatedCancelThreshold: active.repeatedCancelThreshold,
+      }) });
+      setNotice(`Draft ruleset V${version} dibuat dari konfigurasi aktif.`); await refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Pembuatan draft gagal'); }
+    finally { setBusy(false); }
+  }
+
+  async function rulesetAction(ruleset: GovernedRuleset, action: 'approve' | 'activate') {
+    setBusy(true); setError(undefined); setNotice(undefined);
+    try {
+      await api(`/rulesets/${ruleset.rulesetId}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idempotencyKey: `WEB-RULESET-${action}-${ruleset.version}-${Date.now()}`, actorId: 'WEB-ADMIN', permissionContext: 'MARKET_ADMIN' }) });
+      setNotice(`Ruleset V${ruleset.version} berhasil di-${action}.`); await refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Perubahan ruleset gagal'); }
+    finally { setBusy(false); }
+  }
+
+  async function scenarioAction() {
+    setBusy(true); setError(undefined); setNotice(undefined);
+    try {
+      let scenario = scenarios[0];
+      if (!scenario) {
+        scenario = await api<ScenarioDefinition>('/scenarios', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+          idempotencyKey: `WEB-SCENARIO-CREATE-${Date.now()}`, actorId: 'WEB-ADMIN', name: 'Golden LIMIT settlement',
+          seriesCode: 'PTBAE-IND', compliancePeriod: 2027, rulesetId: rulesets.find((item) => item.status === 'ACTIVE')?.rulesetId,
+          seed: { initialPositions: { 'IND-A': 30000, 'IND-B': 50000, 'IND-C': 40000, 'IND-D': -60000 }, autoSettle: true,
+            orders: [{ participantId: 'IND-A', side: 'SELL', quantity: 30000, price: 75000 }, { participantId: 'IND-B', side: 'SELL', quantity: 30000, price: 76000 }, { participantId: 'IND-D', side: 'BUY', quantity: 60000, price: 76000 }] },
+        }) });
+      }
+      const run = lastScenarioRun
+        ? await api<ScenarioRun>(`/scenarios/${scenario.scenarioId}/replay/${lastScenarioRun.runId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idempotencyKey: `WEB-SCENARIO-REPLAY-${Date.now()}`, actorId: 'WEB-OPERATOR' }) })
+        : await api<ScenarioRun>(`/scenarios/${scenario.scenarioId}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idempotencyKey: `WEB-SCENARIO-RUN-${Date.now()}`, actorId: 'WEB-OPERATOR' }) });
+      setLastScenarioRun(run); setNotice(run.isDeterministicMatch === false ? 'Replay berbeda dari source run.' : `Scenario run #${run.runNumber} selesai deterministik.`); await refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Scenario gagal'); }
+    finally { setBusy(false); }
+  }
+
   const openOrders = [...book.orders.bids, ...book.orders.asks].sort(
     (left, right) => left.limitPrice! - right.limitPrice!,
   );
@@ -328,9 +470,9 @@ export function App() {
         <div>
           <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
           <h1>PTBAE-IND</h1>
-          <p className="subtitle">Settlement & SRUK · Compliance Period 2027</p>
+          <p className="subtitle">Ruleset, Admin & Audit · Compliance Period 2027</p>
         </div>
-        <span className="status">Tahap 7</span>
+        <span className="status">Tahap 8</span>
       </header>
 
       <section className="summary" aria-label="Ringkasan pasar">
@@ -341,6 +483,22 @@ export function App() {
 
       {error ? <p className="error">{error}</p> : null}
       {notice ? <p className="notice">{notice}</p> : null}
+
+      <section className="panel orders-panel">
+        <div className="panel-heading compact"><div><p className="eyebrow">MARKET CONTROL</p><h2>Ruleset & session</h2></div><button className="ghost" disabled={busy} onClick={() => void createRulesetDraft()}>Clone active to draft</button></div>
+        <div className="control-strip"><div><span>Session</span><strong>{marketSession?.status ?? '—'}</strong><small>{marketSession?.sessionId ?? 'loading'}</small></div><div className="control-actions">{marketSession?.status === 'OPEN' ? <><button disabled={busy} onClick={() => void sessionAction('halt')}>Halt</button><button className="cancel" disabled={busy} onClick={() => void sessionAction('close')}>Close</button></> : marketSession?.status === 'HALTED' ? <><button disabled={busy} onClick={() => void sessionAction('resume')}>Resume</button><button className="cancel" disabled={busy} onClick={() => void sessionAction('close')}>Close</button></> : <button disabled={busy} onClick={() => void sessionAction('open')}>Open</button>}</div></div>
+        <div className="table-wrap"><table><thead><tr><th>Version</th><th>Status</th><th>Band</th><th>Tick / Lot</th><th>Sell cap</th><th>Finality</th><th></th></tr></thead><tbody>{rulesets.map((ruleset) => <tr key={ruleset.rulesetId}><td><strong>V{ruleset.version}</strong><small>{ruleset.rulesetId}</small></td><td><span className={`pill ${ruleset.status === 'ACTIVE' ? 'surplus' : ruleset.status === 'DRAFT' ? 'balanced' : ''}`}>{ruleset.status}</span></td><td>{money.format(ruleset.minimumPrice)}–{money.format(ruleset.maximumPrice)}</td><td>{number.format(ruleset.tickSize)} / {number.format(ruleset.lotSize)}</td><td>{ruleset.sellCapPercentage}%</td><td>{ruleset.settlementFinality}</td><td>{ruleset.status === 'DRAFT' ? <button className="cancel" disabled={busy} onClick={() => void rulesetAction(ruleset, 'approve')}>Approve</button> : ruleset.status === 'APPROVED' ? <button className="cancel" disabled={busy} onClick={() => void rulesetAction(ruleset, 'activate')}>Activate</button> : null}</td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="governance-grid">
+        <section className="panel orders-panel"><div className="panel-heading compact"><div><p className="eyebrow">DETERMINISTIC REPLAY</p><h2>Scenario runner</h2></div><button className="ghost" disabled={busy} onClick={() => void scenarioAction()}>{lastScenarioRun ? 'Replay last run' : 'Run golden scenario'}</button></div>{lastScenarioRun ? <div className="scenario-result"><strong>Run #{lastScenarioRun.runNumber}</strong><span>{lastScenarioRun.result.events.length} events</span><span>{lastScenarioRun.isDeterministicMatch === undefined ? 'Initial run' : lastScenarioRun.isDeterministicMatch ? 'Identical replay' : 'Mismatch'}</span><small>{lastScenarioRun.resultHash}</small></div> : <p className="empty">Belum ada scenario run pada sesi UI ini.</p>}</section>
+        <section className="panel orders-panel"><div className="panel-heading compact"><div><p className="eyebrow">SURVEILLANCE</p><h2>Open alerts</h2></div><span className="status">{alerts.length}</span></div><div className="mini-list">{alerts.length === 0 ? <p className="empty">Belum ada alert</p> : alerts.slice(-5).reverse().map((alert) => <div key={alert.alertId}><strong>{alert.alertType}</strong><span>{alert.severity}</span><small>{alert.description}</small></div>)}</div></section>
+      </section>
+
+      <section className="panel orders-panel">
+        <div className="panel-heading compact"><div><p className="eyebrow">IMMUTABLE EVENT TRAIL</p><h2>Audit events</h2></div><p>Actor, entity, correlation ID, dan urutan event tersimpan append-only.</p></div>
+        <div className="table-wrap"><table><thead><tr><th>Seq</th><th>Event</th><th>Entity</th><th>Actor</th><th>Correlation</th><th>Time</th></tr></thead><tbody>{auditEvents.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada audit event</td></tr> : [...auditEvents].reverse().map((event) => <tr key={event.auditEventId}><td>#{event.eventSequence}</td><td>{event.eventType}</td><td>{event.entityType}</td><td>{event.actorId}</td><td><small>{event.correlationId}</small></td><td>{new Date(event.occurredAt).toLocaleTimeString('id-ID')}</td></tr>)}</tbody></table></div>
+      </section>
 
       <section className="panel orders-panel">
         <div className="panel-heading compact"><div><p className="eyebrow">MARKET DATA SNAPSHOT</p><h2>{marketData.state === 'TRADING' ? 'Live statistics' : 'No-trade state'}</h2></div><p>Reference price tetap terpisah dari LTP dan tidak digunakan untuk membuat trade sintetis.</p></div>

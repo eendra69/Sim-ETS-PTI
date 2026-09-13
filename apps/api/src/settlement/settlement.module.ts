@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
 import { LimitOrderModule } from '../limit-order/limit-order.module';
 import { PositionBalanceModule } from '../position-balance/position-balance.module';
+import { GovernanceModule } from '../governance/governance.module';
 import { SettlementController } from './settlement.controller';
 import { SettlementService } from './settlement.service';
 
 @Module({
-  imports: [LimitOrderModule, PositionBalanceModule],
+  imports: [LimitOrderModule, PositionBalanceModule, GovernanceModule],
   controllers: [SettlementController],
   providers: [SettlementService],
   exports: [SettlementService],

@@ -11,6 +11,7 @@ function order(overrides: Partial<LimitOrder>): LimitOrder {
     side: 'BUY',
     orderType: 'LIMIT',
     rulesetId: 'RULESET-1',
+    correlationId: '00000000-0000-4000-8000-000000000001',
     quantity: 10,
     remainingQuantity: 10,
     limitPrice: 75_000,

@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsPositive, IsString, MaxLength, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsPositive, IsString, IsUUID, MaxLength, Min } from 'class-validator';
 import { OrderSide, OrderType, TimeInForce } from '../limit-order.types';
 
 export class CreateOrderDto {
@@ -58,4 +58,13 @@ export class CreateOrderDto {
 
   @IsIn(['DAY', 'GTC', 'IOC'])
   timeInForce!: TimeInForce;
+
+  @IsOptional()
+  @IsUUID()
+  correlationId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  causationId?: string;
 }

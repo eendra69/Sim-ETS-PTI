@@ -383,4 +383,56 @@ describe('Position and balance API', () => {
     expect(acknowledged.body.ledgerEntries).toHaveLength(4);
     expect(after.body.acknowledgedPurchases).toBe(before.body.acknowledgedPurchases + trade.quantity);
   });
+
+  it('operates versioned rulesets and market session controls', async () => {
+    const command = { actorId: 'E2E-ADMIN', permissionContext: 'MARKET_ADMIN' };
+    const created = await request(app.getHttpServer()).post('/api/v1/rulesets').send({
+      ...command, idempotencyKey: 'E2E-RULESET-CREATE-V2', rulesetId: 'PTBAE-IND-2027-E2E-V2',
+      seriesCode: 'PTBAE-IND', compliancePeriod: 2027, version: 2, referencePrice: 75_000,
+      minimumPrice: 60_000, maximumPrice: 90_000, tickSize: 200, lotSize: 1,
+      marketSessionId: 'PTBAE-IND-2027-REGULAR', sellCapPercentage: 100,
+      settlementFinality: 'SRUK_ACK_RECONCILED',
+    }).expect(201);
+    expect(created.body.status).toBe('DRAFT');
+    await request(app.getHttpServer()).post('/api/v1/rulesets/PTBAE-IND-2027-E2E-V2/approve')
+      .send({ ...command, idempotencyKey: 'E2E-RULESET-APPROVE-V2' }).expect(201);
+    await request(app.getHttpServer()).post('/api/v1/rulesets/PTBAE-IND-2027-E2E-V2/activate')
+      .send({ ...command, idempotencyKey: 'E2E-RULESET-ACTIVATE-V2' }).expect(201);
+    const oldRuleset = await request(app.getHttpServer())
+      .get('/api/v1/rulesets/PTBAE-IND-2027-PROTOTYPE-V1').expect(200);
+    expect(oldRuleset.body.status).toBe('RETIRED');
+
+    await request(app.getHttpServer()).post('/api/v1/market-sessions/PTBAE-IND-2027-REGULAR/halt')
+      .send({ ...command, idempotencyKey: 'E2E-SESSION-HALT' }).expect(201);
+    const blocked = await request(app.getHttpServer()).post('/api/v1/orders').send({
+      participantId:'IND-C',clientOrderId:'E2E-HALTED-ORDER',seriesCode:'PTBAE-IND',compliancePeriod:2027,
+      side:'SELL',orderType:'LIMIT',quantity:1_000,limitPrice:80_000,timeInForce:'DAY',
+    }).expect(409);
+    expect(blocked.body.code).toBe('MARKET-HALTED');
+    await request(app.getHttpServer()).post('/api/v1/market-sessions/PTBAE-IND-2027-REGULAR/resume')
+      .send({ ...command, idempotencyKey: 'E2E-SESSION-RESUME' }).expect(201);
+  });
+
+  it('runs and deterministically replays a seeded scenario', async () => {
+    const scenario = await request(app.getHttpServer()).post('/api/v1/scenarios').send({
+      idempotencyKey:'E2E-SCENARIO-CREATE',actorId:'E2E-ADMIN',name:'E2E golden',seriesCode:'PTBAE-IND',
+      compliancePeriod:2027,rulesetId:'PTBAE-IND-2027-E2E-V2',seed:{
+        initialPositions:{'IND-A':30000,'IND-B':50000,'IND-C':40000,'IND-D':-60000},autoSettle:true,
+        orders:[{participantId:'IND-A',side:'SELL',quantity:30000,price:75000},
+          {participantId:'IND-B',side:'SELL',quantity:30000,price:76000},
+          {participantId:'IND-D',side:'BUY',quantity:60000,price:76000}],
+      },
+    }).expect(201);
+    const run = await request(app.getHttpServer()).post(`/api/v1/scenarios/${scenario.body.scenarioId}/run`)
+      .send({idempotencyKey:'E2E-SCENARIO-RUN',actorId:'E2E-OPERATOR'}).expect(201);
+    const replay = await request(app.getHttpServer()).post(`/api/v1/scenarios/${scenario.body.scenarioId}/replay/${run.body.runId}`)
+      .send({idempotencyKey:'E2E-SCENARIO-REPLAY',actorId:'E2E-OPERATOR'}).expect(201);
+    expect(replay.body.isDeterministicMatch).toBe(true);
+    expect(replay.body.result.finalPositions).toEqual({'IND-A':0,'IND-B':20000,'IND-C':40000,'IND-D':0});
+
+    const audit = await request(app.getHttpServer()).get('/api/v1/audit-events?limit=200').expect(200);
+    expect(audit.body.map((event: {eventType:string})=>event.eventType)).toEqual(expect.arrayContaining([
+      'RULESET_ACTIVATED','MARKET_SESSION_HALT','SCENARIO_REPLAYED',
+    ]));
+  });
 });

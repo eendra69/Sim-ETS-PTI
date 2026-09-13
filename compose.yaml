@@ -19,6 +19,8 @@ services:
       - ./database/migrations/006_trade_market_data.sql:/docker-entrypoint-initdb.d/19-trade-market-data.sql:ro
       - ./database/migrations/007_settlement_sruk.sql:/docker-entrypoint-initdb.d/19-z-settlement-sruk.sql:ro
       - ./database/seeds/001_demo_participants.sql:/docker-entrypoint-initdb.d/20-demo-participants.sql:ro
+      - ./database/migrations/008_ruleset_admin_audit.sql:/docker-entrypoint-initdb.d/21-ruleset-admin-audit.sql:ro
+      - ./database/seeds/002_governance.sql:/docker-entrypoint-initdb.d/22-governance.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sim_ets} -d ${POSTGRES_DB:-sim_ets}"]
       interval: 5s

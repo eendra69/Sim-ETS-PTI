@@ -3,10 +3,12 @@ import {
   Injectable,
   NotFoundException,
   OnModuleDestroy,
+  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { KeyedMutex } from '../common/keyed-mutex';
+import { GovernanceService } from '../governance/governance.service';
 import { PositionBalanceService } from '../position-balance/position-balance.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
@@ -17,6 +19,7 @@ import {
   OrderBookSnapshot,
   OrderSide,
   ExecutableOrderType,
+  MarketRuleset,
   StopOrder,
   StopOrderStatus,
   Trade,
@@ -24,7 +27,7 @@ import {
   TriggerBookSnapshot,
   TriggerEvent,
 } from './limit-order.types';
-import { BASELINE_MARKET_RULESET, validateAgainstRuleset } from './market-ruleset';
+import { validateAgainstRuleset } from './market-ruleset';
 import { isActive, planMatches } from './matching-engine';
 
 interface LimitOrderRow extends QueryResultRow {
@@ -36,6 +39,8 @@ interface LimitOrderRow extends QueryResultRow {
   side: OrderSide;
   order_type: ExecutableOrderType;
   ruleset_id: string;
+  correlation_id: string;
+  causation_id: string | null;
   quantity: string;
   remaining_quantity: string;
   limit_price: string | null;
@@ -58,6 +63,8 @@ interface StopOrderRow extends QueryResultRow {
   compliance_period: number;
   side: OrderSide;
   ruleset_id: string;
+  correlation_id: string;
+  causation_id: string | null;
   quantity: string;
   remaining_quantity: string;
   stop_price: string;
@@ -109,6 +116,8 @@ interface TradeRow extends QueryResultRow {
   price: string;
   notional: string;
   ruleset_id: string;
+  correlation_id: string;
+  causation_id: string | null;
   status: 'EXECUTED';
   trade_sequence: string;
   executed_at: Date;
@@ -138,8 +147,13 @@ export class LimitOrderService implements OnModuleDestroy {
   private readonly pool?: Pool;
   private nextPrioritySequence = 1;
   private nextTradeSequence = 1;
+  private readonly governanceService: GovernanceService;
 
-  constructor(private readonly positionBalanceService: PositionBalanceService) {
+  constructor(
+    private readonly positionBalanceService: PositionBalanceService,
+    @Optional() governanceService?: GovernanceService,
+  ) {
+    this.governanceService = governanceService ?? new GovernanceService();
     const usePostgres =
       process.env.NODE_ENV !== 'test' && process.env.PERSISTENCE_MODE === 'postgres';
     if (usePostgres) {
@@ -155,7 +169,7 @@ export class LimitOrderService implements OnModuleDestroy {
   }
 
   getRuleset() {
-    return BASELINE_MARKET_RULESET;
+    return this.governanceService.getCurrentRuleset();
   }
 
   async submit(dto: CreateOrderDto): Promise<Order> {
@@ -170,13 +184,38 @@ export class LimitOrderService implements OnModuleDestroy {
             : existing;
         }
 
+        const ruleset = await this.governanceService.getActiveRuleset(
+          dto.seriesCode,
+          dto.compliancePeriod,
+        );
+        this.governanceService.assertOrderEntryOpen(dto.seriesCode, dto.compliancePeriod);
         const reservationPrice = this.validateOrderCommand(dto);
         validateAgainstRuleset(
           dto.seriesCode,
           dto.compliancePeriod,
           dto.quantity,
           reservationPrice,
+          ruleset,
         );
+        if (dto.orderType === 'STOP') {
+          validateAgainstRuleset(
+            dto.seriesCode,
+            dto.compliancePeriod,
+            dto.quantity,
+            dto.stopPrice!,
+            ruleset,
+          );
+        }
+        if (dto.orderType !== 'MARKET' && !ruleset.allowedLimitTimeInForce.includes(dto.timeInForce as 'DAY' | 'GTC')) {
+          throw new BadRequestException({ code: 'ORD-TIF-NOT-ALLOWED', message: 'Time in force is disabled by the active ruleset' });
+        }
+        if (dto.side === 'SELL' && ruleset.sellCapPercentage < 100) {
+          const position = await this.positionBalanceService.getPosition(dto.participantId, dto.seriesCode, dto.compliancePeriod);
+          const perOrderCap = Math.floor(position.maxSellQuantity * ruleset.sellCapPercentage / 100);
+          if (dto.quantity > perOrderCap) throw new BadRequestException({
+            code: 'ORD-RULESET-SELL-CAP', message: 'Order exceeds the active ruleset sell cap', perOrderCap,
+          });
+        }
 
         const maximumNotional = dto.quantity * reservationPrice;
         if (!Number.isSafeInteger(maximumNotional)) {
@@ -209,9 +248,11 @@ export class LimitOrderService implements OnModuleDestroy {
         let inserted: LimitOrder;
         try {
           if (dto.orderType === 'STOP') {
-            return await this.insertStopOrder(dto, reservation.reservationId);
+            const stopOrder = await this.insertStopOrder(dto, reservation.reservationId, ruleset);
+            await this.auditOrder('ORDER_SUBMITTED', stopOrder);
+            return stopOrder;
           }
-          inserted = await this.insertOrder(dto, reservation.reservationId);
+          inserted = await this.insertOrder(dto, reservation.reservationId, ruleset);
         } catch (error) {
           const concurrentlyCreated = await this.findAnyByClientOrderId(
             dto.participantId,
@@ -230,6 +271,7 @@ export class LimitOrderService implements OnModuleDestroy {
           await this.positionBalanceService.releaseReservation(reservation.reservationId);
           throw error;
         }
+        await this.auditOrder('ORDER_SUBMITTED', inserted);
         return this.executeMatches(inserted.orderId);
       },
     );
@@ -313,6 +355,7 @@ export class LimitOrderService implements OnModuleDestroy {
 
   async executeMatches(orderId: string): Promise<LimitOrder> {
     const execution = await this.executeMatchesOnce(orderId);
+    await this.auditGeneratedTrades(execution);
     await this.processTriggerQueue(execution.generatedTrades);
     return execution.order;
   }
@@ -320,6 +363,10 @@ export class LimitOrderService implements OnModuleDestroy {
   private async executeMatchesOnce(orderId: string): Promise<MatchExecution> {
     const order = await this.getExecutableOrder(orderId);
     if (!isActive(order)) return { order, generatedTrades: [] };
+    if (!this.governanceService.isMatchingOpen(order.seriesCode, order.compliancePeriod)) {
+      return { order, generatedTrades: [] };
+    }
+    await this.detectPotentialSelfMatch(order);
     const marketKey = `market:${order.seriesCode}:${order.compliancePeriod}`;
     return this.mutex.runExclusive(marketKey, () =>
       this.pool ? this.executeDbMatches(orderId, marketKey) : this.executeMemoryMatches(orderId),
@@ -327,9 +374,21 @@ export class LimitOrderService implements OnModuleDestroy {
   }
 
   async cancel(orderId: string): Promise<Order> {
-    const stop = await this.findStopOrderById(orderId);
-    if (stop) return this.closeStopOrder(stop, 'CANCELLED');
-    return this.closeOrder(orderId, 'CANCELLED');
+    const before = await this.getOrder(orderId);
+    const stop = before.orderType === 'STOP' ? before : undefined;
+    const result = stop
+      ? await this.closeStopOrder(stop, 'CANCELLED')
+      : await this.closeOrder(orderId, 'CANCELLED');
+    if (before.status !== result.status && result.status === 'CANCELLED') {
+      await this.governanceService.inspectCancel(
+        result.participantId,
+        result.orderId,
+        result.correlationId,
+        result.rulesetId,
+      );
+      await this.auditOrder('ORDER_CANCELLED', result, before);
+    }
+    return result;
   }
 
   async expireDayOrders(seriesCode: string, compliancePeriod: number): Promise<Order[]> {
@@ -353,7 +412,8 @@ export class LimitOrderService implements OnModuleDestroy {
     seriesCode: string,
     compliancePeriod: number,
   ): Promise<OrderBookSnapshot> {
-    validateAgainstRuleset(seriesCode, compliancePeriod, 1, BASELINE_MARKET_RULESET.minimumPrice);
+    const ruleset = await this.governanceService.getActiveRuleset(seriesCode, compliancePeriod);
+    validateAgainstRuleset(seriesCode, compliancePeriod, ruleset.lotSize, ruleset.minimumPrice, ruleset);
     const open = await this.listOpenOrders(seriesCode, compliancePeriod);
     const bids = open
       .filter((order) => order.side === 'BUY')
@@ -382,7 +442,8 @@ export class LimitOrderService implements OnModuleDestroy {
     seriesCode: string,
     compliancePeriod: number,
   ): Promise<TriggerBookSnapshot> {
-    validateAgainstRuleset(seriesCode, compliancePeriod, 1, BASELINE_MARKET_RULESET.minimumPrice);
+    const ruleset = await this.governanceService.getActiveRuleset(seriesCode, compliancePeriod);
+    validateAgainstRuleset(seriesCode, compliancePeriod, ruleset.lotSize, ruleset.minimumPrice, ruleset);
     return {
       seriesCode,
       compliancePeriod,
@@ -451,7 +512,16 @@ export class LimitOrderService implements OnModuleDestroy {
       const sourceTrade = queue.shift()!;
       const activations = await this.activateStopsForTrade(sourceTrade);
       for (const activation of activations) {
+        const stop = (await this.getOrder(activation.event.stopOrderId)) as StopOrder;
+        await this.governanceService.recordAudit({
+          eventType: 'STOP_TRIGGERED', entityType: 'TRIGGER_EVENT', entityId: activation.event.triggerEventId,
+          actorId: 'SYSTEM', permissionContext: 'MARKET_ENGINE', afterState: activation.event,
+          correlationId: activation.event.correlationId, causationId: activation.event.sourceTradeId,
+          rulesetId: stop.rulesetId,
+        });
+        await this.governanceService.inspectTrigger(activation.event, stop.stopPrice, stop.rulesetId);
         const execution = await this.executeMatchesOnce(activation.order.orderId);
+        await this.auditGeneratedTrades(execution);
         queue.push(...execution.generatedTrades);
       }
       queue.sort((left, right) => left.tradeSequence - right.tradeSequence);
@@ -489,7 +559,7 @@ export class LimitOrderService implements OnModuleDestroy {
         triggerBasis: 'LTP',
         activatedOrderId: activated.orderId,
         activatedTradeIds: [],
-        correlationId: randomUUID(),
+        correlationId: stop.correlationId,
         triggeredAt: now,
       };
       const updated: StopOrder = {
@@ -534,8 +604,8 @@ export class LimitOrderService implements OnModuleDestroy {
           `INSERT INTO limit_orders (
              participant_id, client_order_id, series_code, compliance_period, side, order_type,
              ruleset_id, quantity, remaining_quantity, limit_price, protection_price,
-             time_in_force, status, reservation_id, parent_stop_order_id
-           ) VALUES ($1, $2, $3, $4, $5, 'MARKET', $6, $7, $7, NULL, $8, 'IOC', 'OPEN', $9, $10)
+             time_in_force, status, reservation_id, parent_stop_order_id, correlation_id, causation_id
+           ) VALUES ($1, $2, $3, $4, $5, 'MARKET', $6, $7, $7, NULL, $8, 'IOC', 'OPEN', $9, $10, $11, $12)
            RETURNING *`,
           [
             stop.participantId,
@@ -548,15 +618,17 @@ export class LimitOrderService implements OnModuleDestroy {
             stop.protectionPrice,
             stop.reservationId,
             stop.orderId,
+            stop.correlationId,
+            stop.orderId,
           ],
         );
         const activated = this.mapOrder(activatedResult.rows[0]!);
         const eventResult = await client.query<TriggerEventRow>(
           `INSERT INTO trigger_events (
-             stop_order_id, source_trade_id, observed_ltp, trigger_basis, activated_order_id
-           ) VALUES ($1, $2, $3, 'LTP', $4)
+             stop_order_id, source_trade_id, observed_ltp, trigger_basis, activated_order_id, correlation_id
+           ) VALUES ($1, $2, $3, 'LTP', $4, $5)
            RETURNING *`,
-          [stop.orderId, sourceTrade.tradeId, sourceTrade.price, activated.orderId],
+          [stop.orderId, sourceTrade.tradeId, sourceTrade.price, activated.orderId, stop.correlationId],
         );
         await client.query(
           `UPDATE stop_orders
@@ -628,6 +700,8 @@ export class LimitOrderService implements OnModuleDestroy {
         price: plan.price,
         notional,
         rulesetId: incoming.rulesetId,
+        correlationId: incoming.correlationId,
+        causationId: incoming.orderId,
         status: 'EXECUTED',
         tradeSequence: this.nextTradeSequence++,
         executedAt: now,
@@ -702,10 +776,10 @@ export class LimitOrderService implements OnModuleDestroy {
 
       const matchEvent = await client.query<{ match_event_id: string } & QueryResultRow>(
         `INSERT INTO match_events (
-           incoming_order_id, series_code, compliance_period, ruleset_id
-         ) VALUES ($1, $2, $3, $4)
+           incoming_order_id, series_code, compliance_period, ruleset_id, correlation_id
+         ) VALUES ($1, $2, $3, $4, $5)
          RETURNING match_event_id`,
-        [incoming.orderId, incoming.seriesCode, incoming.compliancePeriod, incoming.rulesetId],
+        [incoming.orderId, incoming.seriesCode, incoming.compliancePeriod, incoming.rulesetId, incoming.correlationId],
       );
       const matchEventId = matchEvent.rows[0]!.match_event_id;
       const generatedTrades: Trade[] = [];
@@ -738,8 +812,9 @@ export class LimitOrderService implements OnModuleDestroy {
           `INSERT INTO trades (
              match_event_id, buyer_order_id, seller_order_id,
              buyer_participant_id, seller_participant_id,
-             series_code, compliance_period, quantity, price, notional, ruleset_id
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             series_code, compliance_period, quantity, price, notional, ruleset_id,
+             correlation_id, causation_id
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
            RETURNING *`,
           [
             matchEventId,
@@ -753,6 +828,8 @@ export class LimitOrderService implements OnModuleDestroy {
             plan.price,
             notional,
             incoming.rulesetId,
+            incoming.correlationId,
+            incoming.orderId,
           ],
         );
         const tradeRow = tradeResult.rows[0]!;
@@ -947,6 +1024,7 @@ export class LimitOrderService implements OnModuleDestroy {
   private async insertStopOrder(
     dto: CreateOrderDto,
     reservationId: string,
+    ruleset: MarketRuleset,
   ): Promise<StopOrder> {
     if (!this.pool) {
       const now = new Date().toISOString();
@@ -958,7 +1036,9 @@ export class LimitOrderService implements OnModuleDestroy {
         compliancePeriod: dto.compliancePeriod,
         side: dto.side,
         orderType: 'STOP',
-        rulesetId: BASELINE_MARKET_RULESET.rulesetId,
+        rulesetId: ruleset.rulesetId,
+        correlationId: dto.correlationId ?? randomUUID(),
+        causationId: dto.causationId ?? dto.clientOrderId,
         quantity: dto.quantity,
         remainingQuantity: dto.quantity,
         stopPrice: dto.stopPrice!,
@@ -980,9 +1060,9 @@ export class LimitOrderService implements OnModuleDestroy {
       `INSERT INTO stop_orders (
          participant_id, client_order_id, series_code, compliance_period, side, ruleset_id,
          quantity, remaining_quantity, stop_price, protection_price, trigger_basis,
-         activation_type, time_in_force, status, reservation_id
+         activation_type, time_in_force, status, reservation_id, correlation_id, causation_id
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, 'LTP', 'MARKET', $10,
-         'TRIGGER_PENDING', $11)
+         'TRIGGER_PENDING', $11, $12, $13)
        RETURNING *`,
       [
         dto.participantId,
@@ -990,12 +1070,14 @@ export class LimitOrderService implements OnModuleDestroy {
         dto.seriesCode,
         dto.compliancePeriod,
         dto.side,
-        BASELINE_MARKET_RULESET.rulesetId,
+        ruleset.rulesetId,
         dto.quantity,
         dto.stopPrice,
         dto.protectionPrice,
         dto.timeInForce,
         reservationId,
+        dto.correlationId ?? randomUUID(),
+        dto.causationId ?? dto.clientOrderId,
       ],
     );
     return this.mapStopOrder(result.rows[0]!);
@@ -1038,7 +1120,11 @@ export class LimitOrderService implements OnModuleDestroy {
     }
   }
 
-  private async insertOrder(dto: CreateOrderDto, reservationId: string): Promise<LimitOrder> {
+  private async insertOrder(
+    dto: CreateOrderDto,
+    reservationId: string,
+    ruleset: MarketRuleset,
+  ): Promise<LimitOrder> {
     if (dto.orderType === 'STOP') {
       throw new BadRequestException('STOP orders must be inserted into the trigger book');
     }
@@ -1052,7 +1138,9 @@ export class LimitOrderService implements OnModuleDestroy {
         compliancePeriod: dto.compliancePeriod,
         side: dto.side,
         orderType: dto.orderType,
-        rulesetId: BASELINE_MARKET_RULESET.rulesetId,
+        rulesetId: ruleset.rulesetId,
+        correlationId: dto.correlationId ?? randomUUID(),
+        causationId: dto.causationId ?? dto.clientOrderId,
         quantity: dto.quantity,
         remainingQuantity: dto.quantity,
         ...(dto.limitPrice !== undefined ? { limitPrice: dto.limitPrice } : {}),
@@ -1074,8 +1162,8 @@ export class LimitOrderService implements OnModuleDestroy {
       `INSERT INTO limit_orders (
          participant_id, client_order_id, series_code, compliance_period, side, order_type,
          ruleset_id, quantity, remaining_quantity, limit_price, protection_price,
-         time_in_force, status, reservation_id
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, 'OPEN', $12)
+         time_in_force, status, reservation_id, correlation_id, causation_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, 'OPEN', $12, $13, $14)
        RETURNING *`,
       [
         dto.participantId,
@@ -1084,12 +1172,14 @@ export class LimitOrderService implements OnModuleDestroy {
         dto.compliancePeriod,
         dto.side,
         dto.orderType,
-        BASELINE_MARKET_RULESET.rulesetId,
+        ruleset.rulesetId,
         dto.quantity,
         dto.limitPrice,
         dto.protectionPrice,
         dto.timeInForce,
         reservationId,
+        dto.correlationId ?? randomUUID(),
+        dto.causationId ?? dto.clientOrderId,
       ],
     );
     return this.mapOrder(result.rows[0]!);
@@ -1279,12 +1369,6 @@ export class LimitOrderService implements OnModuleDestroy {
             'STOP requires stopPrice, protectionPrice, LTP trigger, MARKET activation, DAY/GTC, and no limitPrice',
         });
       }
-      validateAgainstRuleset(
-        dto.seriesCode,
-        dto.compliancePeriod,
-        dto.quantity,
-        dto.stopPrice,
-      );
       if (
         (dto.side === 'BUY' && dto.protectionPrice < dto.stopPrice) ||
         (dto.side === 'SELL' && dto.protectionPrice > dto.stopPrice)
@@ -1366,6 +1450,8 @@ export class LimitOrderService implements OnModuleDestroy {
       side: row.side,
       orderType: row.order_type,
       rulesetId: row.ruleset_id,
+      correlationId: row.correlation_id,
+      ...(row.causation_id ? { causationId: row.causation_id } : {}),
       quantity: this.toSafeNumber(row.quantity, 'quantity'),
       remainingQuantity: this.toSafeNumber(row.remaining_quantity, 'remaining_quantity'),
       ...(row.limit_price !== null
@@ -1395,6 +1481,8 @@ export class LimitOrderService implements OnModuleDestroy {
       side: stop.side,
       orderType: 'MARKET',
       rulesetId: stop.rulesetId,
+      correlationId: stop.correlationId,
+      causationId: stop.orderId,
       quantity: stop.quantity,
       remainingQuantity: stop.quantity,
       protectionPrice: stop.protectionPrice,
@@ -1426,6 +1514,8 @@ export class LimitOrderService implements OnModuleDestroy {
       side: row.side,
       orderType: 'STOP',
       rulesetId: row.ruleset_id,
+      correlationId: row.correlation_id,
+      ...(row.causation_id ? { causationId: row.causation_id } : {}),
       quantity: this.toSafeNumber(row.quantity, 'quantity'),
       remainingQuantity: this.toSafeNumber(row.remaining_quantity, 'remaining_quantity'),
       stopPrice: this.toSafeNumber(row.stop_price, 'stop_price'),
@@ -1483,6 +1573,60 @@ export class LimitOrderService implements OnModuleDestroy {
         .sort((left, right) => left.tradeSequence - right.tradeSequence)
         .map((trade) => trade.tradeId),
     };
+  }
+
+  private async auditOrder(eventType: string, order: Order, beforeState?: Order): Promise<void> {
+    await this.governanceService.recordAudit({
+      eventType,
+      entityType: 'ORDER',
+      entityId: order.orderId,
+      actorId: order.participantId,
+      permissionContext: 'TRADER',
+      ...(beforeState ? { beforeState } : {}),
+      afterState: order,
+      correlationId: order.correlationId,
+      causationId: order.causationId,
+      rulesetId: order.rulesetId,
+    });
+  }
+
+  private async auditGeneratedTrades(execution: MatchExecution): Promise<void> {
+    for (const trade of execution.generatedTrades) {
+      await this.governanceService.recordAudit({
+        eventType: 'TRADE_EXECUTED',
+        entityType: 'TRADE',
+        entityId: trade.tradeId,
+        actorId: execution.order.participantId,
+        permissionContext: 'TRADER',
+        afterState: trade,
+        correlationId: trade.correlationId,
+        causationId: trade.causationId,
+        rulesetId: trade.rulesetId,
+      });
+      await this.governanceService.inspectTrade(trade);
+    }
+  }
+
+  private async detectPotentialSelfMatch(incoming: LimitOrder): Promise<void> {
+    const boundary = this.executionBoundary(incoming);
+    const candidate = (await this.listOpenOrders(incoming.seriesCode, incoming.compliancePeriod)).find(
+      (order) =>
+        order.orderId !== incoming.orderId &&
+        order.participantId === incoming.participantId &&
+        order.side !== incoming.side &&
+        (incoming.side === 'BUY'
+          ? boundary >= order.limitPrice!
+          : boundary <= order.limitPrice!),
+    );
+    if (candidate) {
+      await this.governanceService.inspectSelfMatch(
+        incoming.participantId,
+        incoming.orderId,
+        candidate.orderId,
+        incoming.correlationId,
+        incoming.rulesetId,
+      );
+    }
   }
 
   private createTradeLegs(
@@ -1566,6 +1710,8 @@ export class LimitOrderService implements OnModuleDestroy {
       price: this.toSafeNumber(row.price, 'price'),
       notional: this.toSafeNumber(row.notional, 'notional'),
       rulesetId: row.ruleset_id,
+      correlationId: row.correlation_id,
+      ...(row.causation_id ? { causationId: row.causation_id } : {}),
       status: row.status,
       tradeSequence: this.toSafeNumber(row.trade_sequence, 'trade_sequence'),
       executedAt: row.executed_at.toISOString(),

@@ -19,6 +19,8 @@ export interface LimitOrder {
   side: OrderSide;
   orderType: ExecutableOrderType;
   rulesetId: string;
+  correlationId: string;
+  causationId?: string;
   quantity: number;
   remainingQuantity: number;
   limitPrice?: number;
@@ -49,6 +51,8 @@ export interface StopOrder {
   side: OrderSide;
   orderType: 'STOP';
   rulesetId: string;
+  correlationId: string;
+  causationId?: string;
   quantity: number;
   remainingQuantity: number;
   stopPrice: number;
@@ -123,6 +127,16 @@ export interface MarketRuleset {
   stopActivationType: 'MARKET';
   stopReservationTiming: 'SUBMISSION';
   marketSessionId: string;
+  version: number;
+  status: 'DRAFT' | 'APPROVED' | 'ACTIVE' | 'RETIRED';
+  effectiveFrom?: string;
+  effectiveTo?: string;
+  allowedLimitTimeInForce: Array<'DAY' | 'GTC'>;
+  sellCapPercentage: number;
+  settlementFinality: 'DVP_SETTLED' | 'SRUK_ACK_RECONCILED';
+  surveillancePriceDeviationBps: number;
+  surveillanceVolumeThreshold: number;
+  repeatedCancelThreshold: number;
 }
 
 export interface TradeLeg {
@@ -152,6 +166,8 @@ export interface Trade {
   price: number;
   notional: number;
   rulesetId: string;
+  correlationId: string;
+  causationId?: string;
   status: 'EXECUTED';
   tradeSequence: number;
   executedAt: string;

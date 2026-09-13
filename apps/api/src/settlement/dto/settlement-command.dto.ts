@@ -1,9 +1,17 @@
-import { IsInt, IsString, Min, MinLength } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min, MinLength } from 'class-validator';
 
 export class IdempotentCommandDto {
   @IsString()
   @MinLength(8)
   idempotencyKey!: string;
+
+  @IsOptional()
+  @IsString()
+  actorId?: string;
+
+  @IsOptional()
+  @IsString()
+  permissionContext?: string;
 }
 
 export class FailSettlementDto extends IdempotentCommandDto {

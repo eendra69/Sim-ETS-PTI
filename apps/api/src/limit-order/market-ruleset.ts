@@ -19,6 +19,14 @@ export const BASELINE_MARKET_RULESET: MarketRuleset = {
   stopActivationType: 'MARKET',
   stopReservationTiming: 'SUBMISSION',
   marketSessionId: 'PTBAE-IND-2027-REGULAR',
+  version: 1,
+  status: 'ACTIVE',
+  allowedLimitTimeInForce: ['DAY', 'GTC'],
+  sellCapPercentage: 100,
+  settlementFinality: 'SRUK_ACK_RECONCILED',
+  surveillancePriceDeviationBps: 2_000,
+  surveillanceVolumeThreshold: 25_000,
+  repeatedCancelThreshold: 3,
 };
 
 export function validateAgainstRuleset(
@@ -26,8 +34,8 @@ export function validateAgainstRuleset(
   compliancePeriod: number,
   quantity: number,
   price: number,
+  rules: MarketRuleset = BASELINE_MARKET_RULESET,
 ): void {
-  const rules = BASELINE_MARKET_RULESET;
   if (seriesCode !== rules.seriesCode || compliancePeriod !== rules.compliancePeriod) {
     throw new BadRequestException({
       code: 'ORD-UNSUPPORTED-MARKET',

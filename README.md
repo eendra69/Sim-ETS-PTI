@@ -4,7 +4,7 @@ Prototype untuk menghitung posisi kepatuhan tahunan dan mensimulasikan perdagang
 
 ## Status
 
-Tahap 1 sampai 7 telah lolos gate. Tahap 7 Settlement/SRUK menambahkan:
+Tahap 1 sampai 8 telah lolos gate. Prototype saat ini mencakup:
 
 - monorepo TypeScript dengan NestJS API dan React web;
 - formula posisi tahunan, batas jual, dan kebutuhan beli;
@@ -41,7 +41,13 @@ Tahap 1 sampai 7 telah lolos gate. Tahap 7 Settlement/SRUK menambahkan:
 - reconciliation `OPEN`, `MATCHED`, `EXCEPTION`, dan manual `RESOLVED`;
 - finalisasi holding, buying capacity, dan acknowledged compliance position secara atomik;
 - immutable settlement ledger dengan dua unit legs dan dua cash legs; serta
-- idempotency command dan registry-reference uniqueness untuk mencegah double transfer.
+- idempotency command dan registry-reference uniqueness untuk mencegah double transfer;
+- ruleset versioned dengan lifecycle `DRAFT`, `APPROVED`, `ACTIVE`, dan `RETIRED`;
+- effective dating serta satu ruleset aktif per seri dan periode;
+- session control `OPEN`, `HALTED`, dan `CLOSED` tanpa merusak reservation;
+- audit event append-only dengan actor, permission context, before/after state, correlation, dan causation;
+- alert surveillance dasar untuk self-match, harga/volume tidak biasa, repeated cancel, dan trigger anomaly; serta
+- deterministic scenario run, replay, export, dan comparison.
 
 Default simulator bukan ketentuan pasar resmi. Parameter market harus dibaca dari MarketRuleset versioned.
 
@@ -91,7 +97,7 @@ pnpm db:down
 - `POST /api/v1/orders/expire-day?seriesCode=PTBAE-IND&compliancePeriod=2027`
 - `GET /api/v1/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027`
 
-Ruleset prototype saat ini: reference price Rp75.000, price band Rp60.000–Rp90.000, tick Rp200, dan lot 1 tCO2e. Parameter ini bukan ketentuan pasar resmi dan akan dipindahkan ke ruleset versioned/admin pada tahap 8.
+Baseline ruleset prototype: reference price Rp75.000, price band Rp60.000–Rp90.000, tick Rp200, dan lot 1 tCO2e. Parameter ini bukan ketentuan pasar resmi. Admin dapat membuat versi pengganti, mengubahnya selama masih `DRAFT`, lalu approve dan activate tanpa mengubah kode.
 
 ## Endpoint Tahap 3
 
@@ -147,6 +153,32 @@ Trade tetap berada di executed-pending sampai rangkaian DvP dan SRUK selesai. Al
 - `POST /api/v1/reconciliations/:reconciliationId/resolve`
 
 Semua command mutasi menerima `idempotencyKey`. Acknowledgement menerima `registryReference` unik dan `acknowledgedQuantity`. Quantity yang tidak cocok menghasilkan `EXCEPTION` tanpa perubahan posisi; pesan dapat dikirim ulang atau diselesaikan manual dengan quantity yang sudah dikoreksi.
+
+## Tahap 8 Ruleset/Admin & Audit
+
+Ruleset aktif menentukan tick, lot, price band, sell cap, ambang surveillance, dan settlement finality yang dipakai order serta settlement baru. Versi historis tetap tersimpan pada order, trade, settlement, reconciliation, ledger, dan audit event. Ruleset aktif tidak dapat diedit in place; perubahan harus melalui draft versi baru.
+
+- `GET /api/v1/rulesets`
+- `GET /api/v1/rulesets/:rulesetId`
+- `POST /api/v1/rulesets`
+- `PUT /api/v1/rulesets/:rulesetId`
+- `POST /api/v1/rulesets/:rulesetId/approve`
+- `POST /api/v1/rulesets/:rulesetId/activate`
+- `GET /api/v1/market-sessions/:sessionId`
+- `POST /api/v1/market-sessions/:sessionId/open`
+- `POST /api/v1/market-sessions/:sessionId/halt`
+- `POST /api/v1/market-sessions/:sessionId/resume`
+- `POST /api/v1/market-sessions/:sessionId/close`
+- `GET /api/v1/audit-events`
+- `GET /api/v1/surveillance-alerts`
+- `POST /api/v1/scenarios`
+- `GET /api/v1/scenarios`
+- `POST /api/v1/scenarios/:scenarioId/run`
+- `POST /api/v1/scenarios/:scenarioId/replay/:runId`
+- `GET /api/v1/scenarios/runs/:runId/export`
+- `POST /api/v1/scenarios/runs/compare`
+
+Settlement finality dapat dipilih per ruleset: `SRUK_ACK_RECONCILED` memperbarui posisi setelah acknowledgement yang cocok, sedangkan `DVP_SETTLED` memperbaruinya saat DvP selesai dan tetap merekonsiliasi acknowledgement SRUK tanpa double posting. Semua command admin wajib membawa `idempotencyKey`, `actorId`, dan `permissionContext`.
 
 ## Dokumentasi
 

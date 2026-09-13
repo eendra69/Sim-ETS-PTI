@@ -4,10 +4,12 @@ import {
   Injectable,
   NotFoundException,
   OnModuleDestroy,
+  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { KeyedMutex } from '../common/keyed-mutex';
+import { GovernanceService } from '../governance/governance.service';
 import { LimitOrderService } from '../limit-order/limit-order.service';
 import { Trade } from '../limit-order/limit-order.types';
 import { PositionBalanceService } from '../position-balance/position-balance.service';
@@ -72,11 +74,14 @@ export class SettlementService implements OnModuleDestroy {
   private readonly commands = new Map<string, CommandRecord>();
   private readonly mutex = new KeyedMutex();
   private readonly pool?: Pool;
+  private readonly governanceService: GovernanceService;
 
   constructor(
     private readonly limitOrderService: LimitOrderService,
     private readonly positionBalanceService: PositionBalanceService,
+    @Optional() governanceService?: GovernanceService,
   ) {
+    this.governanceService = governanceService ?? new GovernanceService();
     const usePostgres =
       process.env.NODE_ENV !== 'test' && process.env.PERSISTENCE_MODE === 'postgres';
     if (usePostgres) {
@@ -124,7 +129,7 @@ export class SettlementService implements OnModuleDestroy {
           return this.getDbBundle(client, existing.rows[0].settlement_id);
         }
         const settlementId = existingCommand.aggregateId;
-        const correlationId = randomUUID();
+        const correlationId = trade.correlationId;
         const registryMessageId = randomUUID();
         const reconciliationId = randomUUID();
         await client.query(
@@ -150,11 +155,17 @@ export class SettlementService implements OnModuleDestroy {
           [reconciliationId, settlementId, registryMessageId, trade.tradeId, trade.quantity,
             trade.notional, trade.rulesetId, correlationId],
         );
+        await this.governanceService.recordAudit({
+          eventType: 'SETTLEMENT_CREATED', entityType: 'SETTLEMENT', entityId: settlementId,
+          actorId: dto.actorId ?? 'SYSTEM', permissionContext: dto.permissionContext ?? 'SETTLEMENT_ENGINE',
+          afterState: { tradeId: trade.tradeId, quantity: trade.quantity, cashAmount: trade.notional },
+          correlationId, causationId: trade.tradeId, rulesetId: trade.rulesetId,
+        }, client);
         return this.getDbBundle(client, settlementId);
       });
     }
 
-    return this.mutex.runExclusive(`trade:${tradeId}`, () => {
+    return this.mutex.runExclusive(`trade:${tradeId}`, async () => {
       const command = this.claimMemoryCommand('SETTLEMENT_CREATE', dto.idempotencyKey, randomUUID(), fingerprint);
       if (!command.created) return this.getMemoryBundle(command.aggregateId);
       const existing = [...this.settlements.values()].find((item) => item.tradeId === tradeId);
@@ -163,7 +174,7 @@ export class SettlementService implements OnModuleDestroy {
         return this.getMemoryBundle(existing.settlementId);
       }
       const now = new Date().toISOString();
-      const correlationId = randomUUID();
+      const correlationId = trade.correlationId;
       const settlement: SettlementInstruction = {
         settlementId: command.aggregateId, tradeId, buyerParticipantId: trade.buyerParticipantId,
         sellerParticipantId: trade.sellerParticipantId, seriesCode: trade.seriesCode,
@@ -185,6 +196,11 @@ export class SettlementService implements OnModuleDestroy {
       this.settlements.set(settlement.settlementId, settlement);
       this.registryMessages.set(registryMessage.registryMessageId, registryMessage);
       this.reconciliations.set(reconciliation.reconciliationId, reconciliation);
+      await this.governanceService.recordAudit({
+        eventType: 'SETTLEMENT_CREATED', entityType: 'SETTLEMENT', entityId: settlement.settlementId,
+        actorId: dto.actorId ?? 'SYSTEM', permissionContext: dto.permissionContext ?? 'SETTLEMENT_ENGINE',
+        afterState: settlement, correlationId, causationId: trade.tradeId, rulesetId: trade.rulesetId,
+      });
       return this.getMemoryBundle(settlement.settlementId);
     });
   }
@@ -208,7 +224,7 @@ export class SettlementService implements OnModuleDestroy {
   }
 
   async process(settlementId: string, dto: IdempotentCommandDto): Promise<SettlementBundle> {
-    return this.mutateSettlement(settlementId, 'SETTLEMENT_PROCESS', dto.idempotencyKey, {},
+    const settled = await this.mutateSettlement(settlementId, 'SETTLEMENT_PROCESS', dto.idempotencyKey, {},
       (settlement, now) => {
         if (settlement.status === 'SETTLED') return;
         if (settlement.status !== 'PENDING') this.invalidState('Settlement', settlement.status, 'PENDING');
@@ -221,8 +237,12 @@ export class SettlementService implements OnModuleDestroy {
       },
       `UPDATE settlement_instructions SET status='SETTLED', processed_at=now(), settled_at=now(),
        failure_reason=NULL, failed_at=NULL, updated_at=now()
-       WHERE settlement_id=$1 AND status='PENDING'`,
+      WHERE settlement_id=$1 AND status='PENDING'`,
     );
+    const ruleset = await this.governanceService.getRuleset(settled.settlement.rulesetId);
+    return ruleset.settlementFinality === 'DVP_SETTLED'
+      ? this.finalizeAtDvp(settled.settlement.settlementId, dto)
+      : settled;
   }
 
   async fail(settlementId: string, dto: FailSettlementDto): Promise<SettlementBundle> {
@@ -364,7 +384,7 @@ export class SettlementService implements OnModuleDestroy {
         const command = await this.claimDbCommand(client, scope, dto.idempotencyKey,
           manualResolution ? locked.reconciliation.reconciliationId : registryMessageId, fingerprint);
         if (!command.created) return this.getDbBundleByRegistry(client, registryMessageId);
-        if (locked.finalized) {
+        if (locked.finalized && locked.registryMessage.status === 'ACKNOWLEDGED') {
           this.assertSameAcknowledgement(locked, dto);
           return locked;
         }
@@ -386,7 +406,10 @@ export class SettlementService implements OnModuleDestroy {
              exception_reason=$3, updated_at=now() WHERE registry_message_id=$1`,
             [registryMessageId, dto.acknowledgedQuantity, reason],
           );
-          return this.getDbBundleByRegistry(client, registryMessageId);
+          const exceptionBundle = await this.getDbBundleByRegistry(client, registryMessageId);
+          await this.auditPostTrade(client, 'REGISTRY_QUANTITY_MISMATCH', 'REGISTRY_MESSAGE',
+            registryMessageId, exceptionBundle, dto.idempotencyKey);
+          return exceptionBundle;
         }
         await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [dto.registryReference]);
         const duplicateReference = await client.query(
@@ -396,17 +419,24 @@ export class SettlementService implements OnModuleDestroy {
         );
         if (duplicateReference.rows[0]) this.duplicateRegistryReference();
         await this.applyDbFinality(client, locked, dto, manualResolution);
-        return this.getDbBundleByRegistry(client, registryMessageId);
+        const finalized = await this.getDbBundleByRegistry(client, registryMessageId);
+        await this.auditPostTrade(client, manualResolution ? 'RECONCILIATION_RESOLVED' : 'REGISTRY_ACKNOWLEDGED',
+          manualResolution ? 'RECONCILIATION' : 'REGISTRY_MESSAGE',
+          manualResolution ? finalized.reconciliation.reconciliationId : registryMessageId,
+          finalized, dto.idempotencyKey);
+        if (!locked.finalized) await this.auditPositionFinalized(client, finalized, dto);
+        return finalized;
       });
     }
 
     return this.mutex.runExclusive(`registry:${registryMessageId}`, async () => {
       const bundle = this.getMutableMemoryBundleByRegistry(registryMessageId);
+      const positionWasFinalized = bundle.finalized;
       const command = this.claimMemoryCommand(scope, dto.idempotencyKey,
         manualResolution ? bundle.reconciliation.reconciliationId : registryMessageId, fingerprint);
       if (!command.created) return this.getMemoryBundleByRegistry(registryMessageId);
       try {
-        if (bundle.finalized) {
+        if (bundle.finalized && bundle.registryMessage.status === 'ACKNOWLEDGED') {
           this.assertSameAcknowledgement(bundle, dto);
           return bundle;
         }
@@ -422,6 +452,8 @@ export class SettlementService implements OnModuleDestroy {
             errorMessage: reason, rejectedAt: now, updatedAt: now });
           Object.assign(bundle.reconciliation, { status: 'EXCEPTION', registryQuantity: dto.acknowledgedQuantity,
             exceptionReason: reason, updatedAt: now });
+          await this.auditPostTrade(undefined, 'REGISTRY_QUANTITY_MISMATCH', 'REGISTRY_MESSAGE',
+            registryMessageId, bundle, dto.idempotencyKey);
           return this.getMemoryBundle(bundle.settlement.settlementId);
         }
         const duplicateReference = [...this.registryMessages.values()].some(
@@ -430,15 +462,22 @@ export class SettlementService implements OnModuleDestroy {
             message.registryReference === dto.registryReference,
         );
         if (duplicateReference) this.duplicateRegistryReference();
-        await this.positionBalanceService.finalizeSettledTrade(this.transferOf(bundle.settlement));
-        this.finalizedTrades.add(bundle.settlement.tradeId);
+        if (!bundle.finalized) {
+          await this.positionBalanceService.finalizeSettledTrade(this.transferOf(bundle.settlement));
+          this.finalizedTrades.add(bundle.settlement.tradeId);
+        }
         Object.assign(bundle.registryMessage, { status: 'ACKNOWLEDGED', acknowledgedQuantity: dto.acknowledgedQuantity,
           registryReference: dto.registryReference, errorMessage: undefined, acknowledgedAt: now, updatedAt: now });
         Object.assign(bundle.reconciliation, { status: manualResolution ? 'RESOLVED' : 'MATCHED',
           registryQuantity: dto.acknowledgedQuantity, settledCash: bundle.settlement.cashAmount,
           registryReference: dto.registryReference, exceptionReason: undefined, reconciledAt: now,
           ...(manualResolution ? { resolvedAt: now } : {}), updatedAt: now });
-        this.createMemoryLedgerEntries(bundle, dto.registryReference, now);
+        if (bundle.ledgerEntries.length === 0) this.createMemoryLedgerEntries(bundle, dto.registryReference, now);
+        await this.auditPostTrade(undefined, manualResolution ? 'RECONCILIATION_RESOLVED' : 'REGISTRY_ACKNOWLEDGED',
+          manualResolution ? 'RECONCILIATION' : 'REGISTRY_MESSAGE',
+          manualResolution ? bundle.reconciliation.reconciliationId : registryMessageId,
+          bundle, dto.idempotencyKey);
+        if (!positionWasFinalized) await this.auditPositionFinalized(undefined, bundle, dto);
         return this.getMemoryBundle(bundle.settlement.settlementId);
       } catch (error) {
         this.commands.delete(`${scope}:${dto.idempotencyKey}`);
@@ -453,24 +492,26 @@ export class SettlementService implements OnModuleDestroy {
     dto: AcknowledgeRegistryDto,
     manualResolution: boolean,
   ): Promise<void> {
-    await this.positionBalanceService.finalizeSettledTrade(this.transferOf(bundle.settlement), client);
-    await client.query(
-      `INSERT INTO position_finalizations (
-         trade_id, settlement_id, registry_message_id, reconciliation_id, registry_reference,
-         ruleset_id, correlation_id
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [bundle.settlement.tradeId, bundle.settlement.settlementId, bundle.registryMessage.registryMessageId,
-        bundle.reconciliation.reconciliationId, dto.registryReference, bundle.settlement.rulesetId,
-        bundle.settlement.correlationId],
-    );
-    const entries = this.ledgerValues(bundle, dto.registryReference);
-    for (const entry of entries) {
+    if (!bundle.finalized) {
+      await this.positionBalanceService.finalizeSettledTrade(this.transferOf(bundle.settlement), client);
       await client.query(
-        `INSERT INTO settlement_ledger_entries (
-           settlement_id, trade_id, registry_message_id, reconciliation_id, participant_id,
-           leg_type, delta, ruleset_id, registry_reference, correlation_id
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, entry,
+        `INSERT INTO position_finalizations (
+           trade_id, settlement_id, registry_message_id, reconciliation_id, registry_reference,
+           ruleset_id, correlation_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [bundle.settlement.tradeId, bundle.settlement.settlementId, bundle.registryMessage.registryMessageId,
+          bundle.reconciliation.reconciliationId, dto.registryReference, bundle.settlement.rulesetId,
+          bundle.settlement.correlationId],
       );
+      const entries = this.ledgerValues(bundle, dto.registryReference);
+      for (const entry of entries) {
+        await client.query(
+          `INSERT INTO settlement_ledger_entries (
+             settlement_id, trade_id, registry_message_id, reconciliation_id, participant_id,
+             leg_type, delta, ruleset_id, registry_reference, correlation_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, entry,
+        );
+      }
     }
     await client.query(
       `UPDATE registry_messages SET status='ACKNOWLEDGED', acknowledged_quantity=$2,
@@ -488,6 +529,81 @@ export class SettlementService implements OnModuleDestroy {
     );
   }
 
+  private async finalizeAtDvp(
+    settlementId: string,
+    dto: IdempotentCommandDto,
+  ): Promise<SettlementBundle> {
+    const registryReference = `DVP:${settlementId}`;
+    if (this.pool) {
+      return this.withTransaction(async (client) => {
+        const bundle = await this.getDbBundle(client, settlementId, true);
+        if (bundle.finalized) return bundle;
+        if (bundle.settlement.status !== 'SETTLED') {
+          this.invalidState('Settlement', bundle.settlement.status, 'SETTLED');
+        }
+        await this.positionBalanceService.finalizeSettledTrade(this.transferOf(bundle.settlement), client);
+        await client.query(
+          `INSERT INTO position_finalizations (
+             trade_id, settlement_id, registry_message_id, reconciliation_id, registry_reference,
+             ruleset_id, correlation_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [bundle.settlement.tradeId, settlementId, bundle.registryMessage.registryMessageId,
+            bundle.reconciliation.reconciliationId, registryReference, bundle.settlement.rulesetId,
+            bundle.settlement.correlationId],
+        );
+        for (const entry of this.ledgerValues(bundle, registryReference)) {
+          await client.query(
+            `INSERT INTO settlement_ledger_entries (
+               settlement_id,trade_id,registry_message_id,reconciliation_id,participant_id,
+               leg_type,delta,ruleset_id,registry_reference,correlation_id
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, entry,
+          );
+        }
+        await client.query(
+          `UPDATE settlement_reconciliations SET settled_cash=expected_cash,updated_at=now()
+           WHERE settlement_id=$1`, [settlementId],
+        );
+        const finalized = await this.getDbBundle(client, settlementId);
+        await this.auditPostTrade(client, 'DVP_FINALITY_REACHED', 'SETTLEMENT', settlementId,
+          finalized, dto.idempotencyKey);
+        await this.governanceService.recordAudit({
+          eventType: 'POSITION_FINALIZED', entityType: 'POSITION_FINALIZATION',
+          entityId: finalized.settlement.tradeId, actorId: dto.actorId ?? 'SETTLEMENT_ENGINE',
+          permissionContext: dto.permissionContext ?? 'DVP_FINALITY',
+          afterState: { settlementId, finality: 'DVP_SETTLED' },
+          correlationId: finalized.settlement.correlationId, causationId: settlementId,
+          rulesetId: finalized.settlement.rulesetId,
+        }, client);
+        return finalized;
+      });
+    }
+    return this.mutex.runExclusive(`dvp:${settlementId}`, async () => {
+      const snapshot = this.getMemoryBundle(settlementId);
+      if (snapshot.finalized) return snapshot;
+      if (snapshot.settlement.status !== 'SETTLED') {
+        this.invalidState('Settlement', snapshot.settlement.status, 'SETTLED');
+      }
+      const bundle = this.getMutableMemoryBundleByRegistry(snapshot.registryMessage.registryMessageId);
+      await this.positionBalanceService.finalizeSettledTrade(this.transferOf(bundle.settlement));
+      this.finalizedTrades.add(bundle.settlement.tradeId);
+      bundle.reconciliation.settledCash = bundle.settlement.cashAmount;
+      bundle.reconciliation.updatedAt = new Date().toISOString();
+      this.createMemoryLedgerEntries(bundle, registryReference, new Date().toISOString());
+      const finalized = this.getMemoryBundle(settlementId);
+      await this.auditPostTrade(undefined, 'DVP_FINALITY_REACHED', 'SETTLEMENT', settlementId,
+        finalized, dto.idempotencyKey);
+      await this.governanceService.recordAudit({
+        eventType: 'POSITION_FINALIZED', entityType: 'POSITION_FINALIZATION',
+        entityId: finalized.settlement.tradeId, actorId: dto.actorId ?? 'SETTLEMENT_ENGINE',
+        permissionContext: dto.permissionContext ?? 'DVP_FINALITY',
+        afterState: { settlementId, finality: 'DVP_SETTLED' },
+        correlationId: finalized.settlement.correlationId, causationId: settlementId,
+        rulesetId: finalized.settlement.rulesetId,
+      });
+      return finalized;
+    });
+  }
+
   private async mutateSettlement(
     settlementId: string, scope: string, idempotencyKey: string, payload: object,
     memoryMutation: (settlement: SettlementInstruction, now: string) => void,
@@ -503,16 +619,20 @@ export class SettlementService implements OnModuleDestroy {
         const current = await this.getDbBundle(client, settlementId);
         memoryMutation({ ...current.settlement }, new Date().toISOString());
       }
-      return this.getDbBundle(client, settlementId);
+      const updated = await this.getDbBundle(client, settlementId);
+      await this.auditPostTrade(client, scope, 'SETTLEMENT', settlementId, updated, idempotencyKey);
+      return updated;
     });
-    return this.mutex.runExclusive(`settlement:${settlementId}`, () => {
+    return this.mutex.runExclusive(`settlement:${settlementId}`, async () => {
       const command = this.claimMemoryCommand(scope, idempotencyKey, settlementId, fingerprint);
       if (!command.created) return this.getMemoryBundle(settlementId);
       try {
         const settlement = this.requireMemorySettlement(settlementId);
         memoryMutation(settlement, new Date().toISOString());
         settlement.updatedAt = new Date().toISOString();
-        return this.getMemoryBundle(settlementId);
+        const updated = this.getMemoryBundle(settlementId);
+        await this.auditPostTrade(undefined, scope, 'SETTLEMENT', settlementId, updated, idempotencyKey);
+        return updated;
       } catch (error) {
         this.commands.delete(`${scope}:${idempotencyKey}`);
         throw error;
@@ -534,9 +654,11 @@ export class SettlementService implements OnModuleDestroy {
       const simulated = structuredClone(bundle);
       memoryMutation(simulated.registryMessage, simulated.settlement, simulated.reconciliation, new Date().toISOString());
       await dbMutation(client, bundle.registryMessage);
-      return this.getDbBundleByRegistry(client, registryMessageId);
+      const updated = await this.getDbBundleByRegistry(client, registryMessageId);
+      await this.auditPostTrade(client, scope, 'REGISTRY_MESSAGE', registryMessageId, updated, idempotencyKey);
+      return updated;
     });
-    return this.mutex.runExclusive(`registry:${registryMessageId}`, () => {
+    return this.mutex.runExclusive(`registry:${registryMessageId}`, async () => {
       const command = this.claimMemoryCommand(scope, idempotencyKey, registryMessageId, fingerprint);
       if (!command.created) return this.getMemoryBundleByRegistry(registryMessageId);
       try {
@@ -545,7 +667,9 @@ export class SettlementService implements OnModuleDestroy {
         memoryMutation(bundle.registryMessage, bundle.settlement, bundle.reconciliation, now);
         bundle.registryMessage.updatedAt = now;
         bundle.reconciliation.updatedAt = now;
-        return this.getMemoryBundle(bundle.settlement.settlementId);
+        const updated = this.getMemoryBundle(bundle.settlement.settlementId);
+        await this.auditPostTrade(undefined, scope, 'REGISTRY_MESSAGE', registryMessageId, updated, idempotencyKey);
+        return updated;
       } catch (error) {
         this.commands.delete(`${scope}:${idempotencyKey}`);
         throw error;
@@ -558,6 +682,51 @@ export class SettlementService implements OnModuleDestroy {
       sellerParticipantId: settlement.sellerParticipantId, seriesCode: settlement.seriesCode,
       compliancePeriod: settlement.compliancePeriod, quantity: settlement.quantity,
       notional: settlement.cashAmount };
+  }
+
+  private async auditPostTrade(
+    transaction: PoolClient | undefined,
+    eventType: string,
+    entityType: string,
+    entityId: string,
+    bundle: SettlementBundle,
+    causationId: string,
+  ): Promise<void> {
+    await this.governanceService.recordAudit({
+      eventType,
+      entityType,
+      entityId,
+      actorId: 'SYSTEM',
+      permissionContext: 'POST_TRADE_ENGINE',
+      afterState: {
+        settlementStatus: bundle.settlement.status,
+        registryStatus: bundle.registryMessage.status,
+        reconciliationStatus: bundle.reconciliation.status,
+        finalized: bundle.finalized,
+      },
+      correlationId: bundle.settlement.correlationId,
+      causationId,
+      rulesetId: bundle.settlement.rulesetId,
+    }, transaction);
+  }
+
+  private async auditPositionFinalized(
+    transaction: PoolClient | undefined,
+    bundle: SettlementBundle,
+    dto: AcknowledgeRegistryDto,
+  ): Promise<void> {
+    await this.governanceService.recordAudit({
+      eventType: 'POSITION_FINALIZED', entityType: 'POSITION_FINALIZATION',
+      entityId: bundle.settlement.tradeId, actorId: dto.actorId ?? 'SRUK-SIMULATOR',
+      permissionContext: dto.permissionContext ?? 'REGISTRY_ADAPTER',
+      afterState: { settlementId: bundle.settlement.settlementId,
+        registryMessageId: bundle.registryMessage.registryMessageId,
+        reconciliationId: bundle.reconciliation.reconciliationId,
+        registryReference: dto.registryReference, quantity: dto.acknowledgedQuantity },
+      correlationId: bundle.settlement.correlationId,
+      causationId: bundle.registryMessage.registryMessageId,
+      rulesetId: bundle.settlement.rulesetId,
+    }, transaction);
   }
 
   private ledgerValues(bundle: SettlementBundle, registryReference: string): unknown[][] {
