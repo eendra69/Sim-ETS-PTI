@@ -1,0 +1,25 @@
+{
+  "name": "@sim-ets/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.3",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^5.7.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.0"
+  }
+}

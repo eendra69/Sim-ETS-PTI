@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sim-ets-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sim_ets}
+      POSTGRES_USER: ${POSTGRES_USER:-sim_ets}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sim_ets_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - sim_ets_postgres_data:/var/lib/postgresql/data
+      - ./database/migrations/001_position_balance.sql:/docker-entrypoint-initdb.d/10-position-balance.sql:ro
+      - ./database/seeds/001_demo_participants.sql:/docker-entrypoint-initdb.d/20-demo-participants.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sim_ets} -d ${POSTGRES_DB:-sim_ets}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  sim_ets_postgres_data:

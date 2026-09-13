@@ -1,0 +1,19 @@
+{
+  "name": "sim-ets-pti",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Simulator Regular Market PTBAE-IND",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @sim-ets/api --filter @sim-ets/web dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
