@@ -4,7 +4,7 @@ Prototype untuk menghitung posisi kepatuhan tahunan dan mensimulasikan perdagang
 
 ## Status
 
-Tahap 1 sampai 8 telah lolos gate. Prototype saat ini mencakup:
+Tahap 1 sampai 8 telah lolos gate dan Tahap 9 menyediakan release gate UAT/staging. Prototype saat ini mencakup:
 
 - monorepo TypeScript dengan NestJS API dan React web;
 - formula posisi tahunan, batas jual, dan kebutuhan beli;
@@ -48,6 +48,11 @@ Tahap 1 sampai 8 telah lolos gate. Prototype saat ini mencakup:
 - audit event append-only dengan actor, permission context, before/after state, correlation, dan causation;
 - alert surveillance dasar untuk self-match, harga/volume tidak biasa, repeated cancel, dan trigger anomaly; serta
 - deterministic scenario run, replay, export, dan comparison.
+- UAT end-to-end berbasis 42 posisi sintetis `VERIFIED` tahun 2025;
+- provenance posisi serta pencegahan hak jual dari posisi `PROVISIONAL` 2026;
+- API-key RBAC dan participant scope untuk trader;
+- identity-bound admin audit, correlation ID, structured request log, rate limit, security headers;
+- liveness, PostgreSQL readiness, metrik Prometheus, CI PostgreSQL, dan backup/restore runbook.
 
 Default simulator bukan ketentuan pasar resmi. Parameter market harus dibaca dari MarketRuleset versioned.
 
@@ -79,6 +84,7 @@ pnpm data:validate:synthetic
 pnpm db:up
 pnpm db:migrate
 pnpm db:seed:synthetic
+pnpm uat:synthetic
 pnpm db:down
 ```
 
@@ -198,6 +204,12 @@ Ruleset aktif menentukan tick, lot, price band, sell cap, ambang surveillance, d
 - `POST /api/v1/scenarios/runs/compare`
 
 Settlement finality dapat dipilih per ruleset: `SRUK_ACK_RECONCILED` memperbarui posisi setelah acknowledgement yang cocok, sedangkan `DVP_SETTLED` memperbaruinya saat DvP selesai dan tetap merekonsiliasi acknowledgement SRUK tanpa double posting. Semua command admin wajib membawa `idempotencyKey`, `actorId`, dan `permissionContext`.
+
+## Tahap 9 UAT & Production Readiness
+
+`pnpm uat:synthetic` menjalankan happy path 2025 lengkap dan negative controls 2026 terhadap API PostgreSQL yang sedang aktif. Gunakan database UAT disposable karena runner sengaja membuat ruleset, order, trade, settlement, dan perubahan posisi. UI menyediakan pemilih periode 2024–2027; order entry otomatis nonaktif ketika tampilan posisi bukan periode market aktif.
+
+Konfigurasi staging tersedia di `.env.staging.example`. Pada mode production, API gagal start bila API-key auth, database, atau origin CORS belum dikonfigurasi. Detail release gate, batas kesiapan, rollback, serta backup/restore terdapat di [docs/production-readiness.md](docs/production-readiness.md).
 
 ## Dokumentasi
 

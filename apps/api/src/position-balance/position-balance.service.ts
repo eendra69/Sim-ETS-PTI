@@ -40,6 +40,11 @@ interface PositionBalanceRow extends QueryResultRow {
   executed_buy_pending: string;
   executed_buy_pending_funds: string;
   version: number;
+  source_status: AnnualPositionInput['sourceStatus'];
+  data_origin: AnnualPositionInput['dataOrigin'];
+  source_reference: string | null;
+  business_type: string | null;
+  scale_class: AnnualPositionInput['scaleClass'] | null;
 }
 
 interface ReservationRow extends QueryResultRow {
@@ -146,6 +151,8 @@ export class PositionBalanceService implements OnModuleDestroy {
         const existing = await this.findExistingDbReservation(client, dto, 'SELL_QUOTA', dto.quantity, 0);
         if (existing) return existing;
 
+        this.assertVerifiedForSale(position);
+
         const snapshot = calculatePosition(position, balance);
         if (dto.quantity > snapshot.availableToSell) {
           throw this.insufficientSell(snapshot.availableToSell);
@@ -167,6 +174,7 @@ export class PositionBalanceService implements OnModuleDestroy {
       if (existing) return existing;
 
       const position = this.requirePosition(dto.participantId, dto.seriesCode, dto.compliancePeriod);
+      this.assertVerifiedForSale(position);
       const balance = this.requireBalance(dto.participantId, dto.seriesCode, dto.compliancePeriod);
       const snapshot = calculatePosition(position, balance);
       if (dto.quantity > snapshot.availableToSell) {
@@ -564,6 +572,11 @@ export class PositionBalanceService implements OnModuleDestroy {
       p.acknowledged_sales,
       p.eligible_banked_units,
       p.eligible_offset_applied,
+      p.source_status,
+      p.data_origin,
+      p.source_reference,
+      participant.business_type,
+      participant.scale_class,
       b.eligible_holding,
       b.locked_units,
       b.surrendered_units,
@@ -598,6 +611,11 @@ export class PositionBalanceService implements OnModuleDestroy {
       acknowledgedSales: this.toSafeNumber(row.acknowledged_sales, 'acknowledged_sales'),
       eligibleBankedUnits: this.toSafeNumber(row.eligible_banked_units, 'eligible_banked_units'),
       eligibleOffsetApplied: this.toSafeNumber(row.eligible_offset_applied, 'eligible_offset_applied'),
+      sourceStatus: row.source_status,
+      dataOrigin: row.data_origin,
+      ...(row.source_reference ? { sourceReference: row.source_reference } : {}),
+      ...(row.business_type ? { businessType: row.business_type } : {}),
+      ...(row.scale_class ? { scaleClass: row.scale_class } : {}),
     };
     const balance: BalanceAccount = {
       participantId: row.participant_id,
@@ -956,6 +974,16 @@ export class PositionBalanceService implements OnModuleDestroy {
         code: 'BAL-INSUFFICIENT-BUYING-CAPACITY',
         message: 'Maximum notional plus fee buffer exceeds available buying capacity',
         availableBuyingCapacity: snapshot.availableBuyingCapacity,
+      });
+    }
+  }
+
+  private assertVerifiedForSale(position: AnnualPositionInput): void {
+    if (position.sourceStatus !== 'VERIFIED') {
+      throw new BadRequestException({
+        code: 'BAL-POSITION-NOT-VERIFIED',
+        message: 'Sell orders require a VERIFIED annual compliance position',
+        sourceStatus: position.sourceStatus,
       });
     }
   }

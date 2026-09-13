@@ -475,6 +475,34 @@ td small {
   border-radius: 10px;
 }
 
+.period-selector {
+  min-width: 230px;
+  color: #455164;
+  font-size: 0.78rem;
+}
+
+.auth-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-control input {
+  min-width: 210px;
+}
+
+.period-selector select {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.history-note {
+  margin: 0 32px 12px;
+  color: #7a5320;
+  font-size: 0.82rem;
+}
+
 .error {
   color: #8d3027;
   background: #fbe7e2;

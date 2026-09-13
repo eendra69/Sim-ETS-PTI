@@ -12,6 +12,9 @@ const defaults = {
   acknowledgedSales: 0,
   eligibleBankedUnits: 0,
   eligibleOffsetApplied: 0,
+  sourceStatus: 'VERIFIED' as const,
+  dataOrigin: 'UNSPECIFIED' as const,
+  sourceReference: 'DEMO-FIXTURE',
 };
 
 export const demoPositions: AnnualPositionInput[] = [

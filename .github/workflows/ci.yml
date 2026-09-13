@@ -1,0 +1,67 @@
+name: CI and synthetic UAT
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: sim_ets_uat
+          POSTGRES_USER: sim_ets
+          POSTGRES_PASSWORD: sim_ets_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sim_ets -d sim_ets_uat"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://sim_ets:sim_ets_ci@localhost:5432/sim_ets_uat
+      PERSISTENCE_MODE: postgres
+      AUTH_MODE: api-key
+      API_KEYS_JSON: '[{"apiKey":"ci-uat-key-at-least-16-characters","actorId":"CI-UAT","roles":["ADMIN","AUDITOR","MARKET_OPERATOR","SETTLEMENT_OPERATOR","UAT_OPERATOR"]}]'
+      UAT_API_KEY: ci-uat-key-at-least-16-characters
+      UAT_BASE_URL: http://localhost:3100/api/v1
+      API_PORT: 3100
+      WEB_ORIGIN: http://localhost:5173
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm data:generate:synthetic && pnpm data:validate:synthetic
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - name: Apply migrations and synthetic seed
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client
+          for file in database/migrations/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"; done
+          for file in database/seeds/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"; done
+      - name: Start API and wait for readiness
+        run: |
+          NODE_ENV=production pnpm --filter @sim-ets/api start > api.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://localhost:3100/api/v1/health/ready && exit 0
+            sleep 1
+          done
+          cat api.log
+          exit 1
+      - run: pnpm uat:synthetic
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: synthetic-uat-report
+          path: |
+            outputs/uat/*.json
+            api.log

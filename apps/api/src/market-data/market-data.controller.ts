@@ -6,7 +6,9 @@ import {
   MarketDataSnapshot,
   MarketDataTradeEvent,
 } from './market-data.types';
+import { Roles } from '../platform/auth.decorators';
 
+@Roles('ADMIN', 'AUDITOR', 'MARKET_OPERATOR', 'SETTLEMENT_OPERATOR', 'TRADER', 'UAT_OPERATOR')
 @Controller('market-data')
 export class MarketDataController {
   constructor(private readonly marketDataService: MarketDataService) {}

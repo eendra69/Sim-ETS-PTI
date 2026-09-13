@@ -14,6 +14,11 @@ interface PositionSnapshot {
   acknowledgedSales: number;
   executedSellPending: number;
   executedBuyPending: number;
+  sourceStatus: 'PROJECTED' | 'PROVISIONAL' | 'VERIFIED';
+  dataOrigin: 'UNSPECIFIED' | 'OFFICIAL' | 'SYNTHETIC';
+  sourceReference?: string;
+  businessType?: string;
+  scaleClass?: 'SMALL' | 'MEDIUM' | 'LARGE';
 }
 
 interface LimitOrder {
@@ -183,7 +188,10 @@ function priceOrDash(value: number | null): string {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, init);
+  const headers = new Headers(init?.headers);
+  const storedApiKey = sessionStorage.getItem('sim-ets-api-key');
+  if (storedApiKey) headers.set('x-api-key', storedApiKey);
+  const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
   const body = (await response.json()) as T & { message?: string };
   if (!response.ok) throw new Error(body.message ?? `API merespons ${response.status}`);
   return body;
@@ -191,6 +199,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function App() {
   const [positions, setPositions] = useState<PositionSnapshot[]>([]);
+  const [apiKeyInput, setApiKeyInput] = useState(() => sessionStorage.getItem('sim-ets-api-key') ?? '');
+  const [positionPeriod, setPositionPeriod] = useState(2025);
+  const [activeRuleset, setActiveRuleset] = useState<GovernedRuleset>();
   const [book, setBook] = useState<OrderBook>({ bids: [], asks: [], orders: { bids: [], asks: [] } });
   const [trades, setTrades] = useState<Trade[]>([]);
   const [triggerBook, setTriggerBook] = useState<TriggerBook>({ entries: [] });
@@ -233,7 +244,7 @@ export function App() {
     try {
       const currentRuleset = await api<GovernedRuleset>('/market-rulesets/current');
       const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements, nextRulesets, nextSession, nextAudit, nextAlerts, nextScenarios] = await Promise.all([
-        api<PositionSnapshot[]>('/positions?seriesCode=PTBAE-IND&compliancePeriod=2027'),
+        api<PositionSnapshot[]>(`/positions?seriesCode=PTBAE-IND&compliancePeriod=${positionPeriod}`),
         api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<TriggerBook>('/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
@@ -246,6 +257,7 @@ export function App() {
         api<ScenarioDefinition[]>('/scenarios'),
       ]);
       setPositions(nextPositions);
+      setActiveRuleset(currentRuleset);
       setBook(nextBook);
       setTrades(nextTrades);
       setTriggerBook(nextTriggerBook);
@@ -260,11 +272,17 @@ export function App() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tidak dapat memuat data');
     }
-  }, []);
+  }, [positionPeriod]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (positions.length && !positions.some((position) => position.participantId === participantId)) {
+      setParticipantId(positions[0]!.participantId);
+    }
+  }, [participantId, positions]);
 
   const totals = useMemo(
     () => ({
@@ -273,6 +291,14 @@ export function App() {
     }),
     [positions],
   );
+
+  function applyApiKey(): void {
+    const next = apiKeyInput.trim();
+    if (next) sessionStorage.setItem('sim-ets-api-key', next);
+    else sessionStorage.removeItem('sim-ets-api-key');
+    setNotice(next ? 'API key diterapkan untuk sesi browser ini.' : 'API key sesi dihapus.');
+    void refresh();
+  }
 
   async function submitOrder(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -470,9 +496,9 @@ export function App() {
         <div>
           <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
           <h1>PTBAE-IND</h1>
-          <p className="subtitle">Ruleset, Admin & Audit · Compliance Period 2027</p>
+          <p className="subtitle">UAT & Production Readiness · Market {activeRuleset?.compliancePeriod ?? 2027} · Position view {positionPeriod}</p>
         </div>
-        <span className="status">Tahap 8</span>
+        <div className="auth-control"><input type="password" aria-label="API key" placeholder="Staging API key" value={apiKeyInput} onChange={(event) => setApiKeyInput(event.target.value)} /><button className="ghost" type="button" onClick={applyApiKey}>Apply</button><span className="status">Tahap 9</span></div>
       </header>
 
       <section className="summary" aria-label="Ringkasan pasar">
@@ -524,7 +550,8 @@ export function App() {
             {orderType === 'STOP' ? <label>Stop price · LTP<input type="number" min="60000" max="90000" step="200" value={stopPrice} onChange={(event) => setStopPrice(Number(event.target.value))} /></label> : null}
             <label>Time in force<select value={timeInForce} disabled={orderType === 'MARKET'} onChange={(event) => setTimeInForce(event.target.value as 'DAY' | 'GTC')}><option>DAY</option><option>GTC</option>{orderType === 'MARKET' ? <option>IOC</option> : null}</select></label>
           </div>
-          <button type="submit" disabled={busy}>{busy ? 'Memproses…' : `Kirim ${side} ${orderType}`}</button>
+          {positionPeriod !== (activeRuleset?.compliancePeriod ?? 2027) ? <p className="history-note">Order entry dinonaktifkan saat melihat posisi historis/provisional. Pilih periode pasar aktif.</p> : null}
+          <button type="submit" disabled={busy || positionPeriod !== (activeRuleset?.compliancePeriod ?? 2027)}>{busy ? 'Memproses…' : `Kirim ${side} ${orderType}`}</button>
           <small className="hint">Maximum exposure: {money.format(quantity * (orderType === 'LIMIT' ? limitPrice : protectionPrice))}</small>
         </form>
 
@@ -553,8 +580,8 @@ export function App() {
       </section>
 
       <section className="panel positions-panel">
-        <div className="panel-heading"><div><p className="eyebrow">VERIFIED POSITION</p><h2>Posisi peserta</h2></div><p>Executed-pending terpisah dari acknowledged sampai rekonsiliasi SRUK final.</p></div>
-        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Allocated</th><th>Emission</th><th>Net position</th><th>Executed pending</th><th>Acknowledged B/S</th><th>Available sell</th><th>Buy need</th></tr></thead><tbody>{positions.map((position) => <tr key={position.participantId}><td><strong>{position.participantName}</strong><small>{position.participantId}</small></td><td>{number.format(position.allocatedQuota)}</td><td>{number.format(position.verifiedEmission)}</td><td><span className={`pill ${position.positionStatus.toLowerCase()}`}>{signed(position.netPosition)}</span></td><td>B {number.format(position.executedBuyPending)} / S {number.format(position.executedSellPending)}</td><td>{number.format(position.acknowledgedPurchases)} / {number.format(position.acknowledgedSales)}</td><td>{number.format(position.availableToSell)}</td><td>{number.format(position.availableBuyNeed)}</td></tr>)}</tbody></table></div>
+        <div className="panel-heading"><div><p className="eyebrow">ANNUAL COMPLIANCE POSITION</p><h2>Posisi peserta</h2></div><label className="period-selector">Periode<select value={positionPeriod} onChange={(event) => setPositionPeriod(Number(event.target.value))}><option value={2024}>2024 · VERIFIED</option><option value={2025}>2025 · VERIFIED (UAT)</option><option value={2026}>2026 · PROVISIONAL</option><option value={2027}>2027 · ACTIVE MARKET</option></select></label></div>
+        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Provenance</th><th>Allocated</th><th>Emission</th><th>Net position</th><th>Executed pending</th><th>Acknowledged B/S</th><th>Available sell</th><th>Buy need</th></tr></thead><tbody>{positions.map((position) => <tr key={position.participantId}><td><strong>{position.participantName}</strong><small>{position.participantId}{position.businessType ? ` · ${position.businessType}` : ''}</small></td><td><span className={`pill ${position.sourceStatus === 'VERIFIED' ? 'surplus' : 'balanced'}`}>{position.sourceStatus}</span><small>{position.dataOrigin}{position.scaleClass ? ` · ${position.scaleClass}` : ''}</small></td><td>{number.format(position.allocatedQuota)}</td><td>{number.format(position.verifiedEmission)}</td><td><span className={`pill ${position.positionStatus.toLowerCase()}`}>{signed(position.netPosition)}</span></td><td>B {number.format(position.executedBuyPending)} / S {number.format(position.executedSellPending)}</td><td>{number.format(position.acknowledgedPurchases)} / {number.format(position.acknowledgedSales)}</td><td>{number.format(position.availableToSell)}</td><td>{number.format(position.availableBuyNeed)}</td></tr>)}</tbody></table></div>
       </section>
 
       <footer>Default simulator · Bukan penetapan ketentuan resmi pasar</footer>

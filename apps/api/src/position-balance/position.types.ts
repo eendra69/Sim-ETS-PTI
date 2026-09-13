@@ -12,6 +12,11 @@ export interface AnnualPositionInput {
   acknowledgedSales: number;
   eligibleBankedUnits: number;
   eligibleOffsetApplied: number;
+  sourceStatus: 'PROJECTED' | 'PROVISIONAL' | 'VERIFIED';
+  dataOrigin: 'UNSPECIFIED' | 'OFFICIAL' | 'SYNTHETIC';
+  sourceReference?: string;
+  businessType?: string;
+  scaleClass?: 'SMALL' | 'MEDIUM' | 'LARGE';
 }
 
 export interface BalanceAccount {

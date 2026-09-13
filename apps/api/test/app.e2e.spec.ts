@@ -20,6 +20,49 @@ describe('Position and balance API', () => {
     await app.close();
   });
 
+  it('exposes liveness, readiness, metrics, and a correlation ID', async () => {
+    const live = await request(app.getHttpServer()).get('/api/v1/health/live').expect(200);
+    expect(live.body.status).toBe('alive');
+    expect(live.headers['x-correlation-id']).toBeDefined();
+    await request(app.getHttpServer()).get('/api/v1/health/ready').expect(200, {
+      status: 'ready', database: 'in-memory',
+    });
+    const metrics = await request(app.getHttpServer()).get('/api/v1/metrics').expect(200);
+    expect(metrics.text).toContain('sim_ets_http_requests_total');
+  });
+
+  it('enforces API-key authentication, roles, and trader participant scope when enabled', async () => {
+    const previousMode = process.env.AUTH_MODE;
+    const previousKeys = process.env.API_KEYS_JSON;
+    process.env.AUTH_MODE = 'api-key';
+    process.env.API_KEYS_JSON = JSON.stringify([{
+      apiKey: 'uat-trader-key-at-least-16-characters',
+      actorId: 'TRADER-IND-A',
+      roles: ['TRADER'],
+      participantId: 'IND-A',
+    }]);
+    try {
+      await request(app.getHttpServer())
+        .get('/api/v1/positions?seriesCode=PTBAE-IND&compliancePeriod=2027')
+        .expect(401);
+      await request(app.getHttpServer())
+        .post('/api/v1/orders')
+        .set('x-api-key', 'uat-trader-key-at-least-16-characters')
+        .send({
+          participantId: 'IND-B', clientOrderId: 'E2E-SCOPE-REJECT',
+          seriesCode: 'PTBAE-IND', compliancePeriod: 2027,
+          side: 'SELL', orderType: 'LIMIT', quantity: 1_000,
+          limitPrice: 75_000, timeInForce: 'DAY',
+        })
+        .expect(403);
+    } finally {
+      if (previousMode === undefined) delete process.env.AUTH_MODE;
+      else process.env.AUTH_MODE = previousMode;
+      if (previousKeys === undefined) delete process.env.API_KEYS_JSON;
+      else process.env.API_KEYS_JSON = previousKeys;
+    }
+  });
+
   it('returns the four documented annual positions', async () => {
     const response = await request(app.getHttpServer())
       .get('/api/v1/positions?seriesCode=PTBAE-IND&compliancePeriod=2027')

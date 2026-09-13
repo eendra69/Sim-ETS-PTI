@@ -8,6 +8,7 @@ import { MarketDataModule } from './market-data/market-data.module';
 import { PositionBalanceModule } from './position-balance/position-balance.module';
 import { SettlementModule } from './settlement/settlement.module';
 import { ScenarioModule } from './scenario/scenario.module';
+import { PlatformModule } from './platform/platform.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { ScenarioModule } from './scenario/scenario.module';
       isGlobal: true,
       envFilePath: [join(process.cwd(), '.env'), join(process.cwd(), '../../.env')],
     }),
+    PlatformModule,
     PositionBalanceModule,
     GovernanceModule,
     LimitOrderModule,
