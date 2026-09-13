@@ -337,4 +337,50 @@ describe('Position and balance API', () => {
     expect(replay.body.points).toHaveLength(3);
     expect(replay.body.finalStatistics).toEqual(snapshot.body.statistics);
   });
+
+  it('settles one executed trade only after an exact SRUK acknowledgement', async () => {
+    const trades = await request(app.getHttpServer())
+      .get('/api/v1/trades?seriesCode=PTBAE-IND&compliancePeriod=2027')
+      .expect(200);
+    const trade = trades.body[0];
+    const created = await request(app.getHttpServer())
+      .post(`/api/v1/settlements/from-trade/${trade.tradeId}`)
+      .send({ idempotencyKey: 'E2E-SET-CREATE-1' })
+      .expect(201);
+    expect(created.body.settlement.status).toBe('PENDING');
+
+    const processed = await request(app.getHttpServer())
+      .post(`/api/v1/settlements/${created.body.settlement.settlementId}/process`)
+      .send({ idempotencyKey: 'E2E-SET-PROCESS-1' })
+      .expect(201);
+    expect(processed.body.settlement.status).toBe('SETTLED');
+
+    const sent = await request(app.getHttpServer())
+      .post(`/api/v1/registry/messages/${created.body.registryMessage.registryMessageId}/send`)
+      .send({ idempotencyKey: 'E2E-SRUK-SEND-1' })
+      .expect(201);
+    const before = await request(app.getHttpServer())
+      .get(`/api/v1/positions/${trade.buyerParticipantId}?seriesCode=PTBAE-IND&compliancePeriod=2027`)
+      .expect(200);
+
+    const acknowledged = await request(app.getHttpServer())
+      .post(`/api/v1/registry/messages/${sent.body.registryMessage.registryMessageId}/acknowledge`)
+      .send({
+        idempotencyKey: 'E2E-SRUK-ACK-1',
+        registryReference: 'SRUK-E2E-ACK-1',
+        acknowledgedQuantity: trade.quantity,
+      })
+      .expect(201);
+    const after = await request(app.getHttpServer())
+      .get(`/api/v1/positions/${trade.buyerParticipantId}?seriesCode=PTBAE-IND&compliancePeriod=2027`)
+      .expect(200);
+
+    expect(acknowledged.body).toMatchObject({
+      finalized: true,
+      registryMessage: { status: 'ACKNOWLEDGED' },
+      reconciliation: { status: 'MATCHED' },
+    });
+    expect(acknowledged.body.ledgerEntries).toHaveLength(4);
+    expect(after.body.acknowledgedPurchases).toBe(before.body.acknowledgedPurchases + trade.quantity);
+  });
 });

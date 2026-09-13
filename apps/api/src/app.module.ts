@@ -5,6 +5,7 @@ import { HealthController } from './health.controller';
 import { LimitOrderModule } from './limit-order/limit-order.module';
 import { MarketDataModule } from './market-data/market-data.module';
 import { PositionBalanceModule } from './position-balance/position-balance.module';
+import { SettlementModule } from './settlement/settlement.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { PositionBalanceModule } from './position-balance/position-balance.modul
     PositionBalanceModule,
     LimitOrderModule,
     MarketDataModule,
+    SettlementModule,
   ],
   controllers: [HealthController],
 })

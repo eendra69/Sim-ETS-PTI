@@ -4,7 +4,7 @@ Prototype untuk menghitung posisi kepatuhan tahunan dan mensimulasikan perdagang
 
 ## Status
 
-Tahap 1 sampai 5 telah lolos gate. Tahap 6 Trade/Market Data menyediakan:
+Tahap 1 sampai 7 telah lolos gate. Tahap 7 Settlement/SRUK menambahkan:
 
 - monorepo TypeScript dengan NestJS API dan React web;
 - formula posisi tahunan, batas jual, dan kebutuhan beli;
@@ -33,8 +33,15 @@ Tahap 1 sampai 5 telah lolos gate. Tahap 6 Trade/Market Data menyediakan:
 - immutable BUY/SELL TradeLeg untuk setiap trade;
 - explicit `NO_TRADES` state yang memisahkan reference price dari LTP;
 - best bid, best ask, spread, depth, LTP, volume, notional, VWAP, dan OHLC;
-- statistik berbasis trade-sequence window; serta
+- statistik berbasis trade-sequence window;
 - resumable trade-event feed dan deterministic replay.
+- SettlementInstruction T+0 trade-for-trade DvP dengan cash dan unit obligation;
+- lifecycle settlement `PENDING`, `PROCESSING`, `SETTLED`, `FAILED`, dan `REVERSED`;
+- lifecycle pesan SRUK `QUEUED`, `SENT`, `ACKNOWLEDGED`, `REJECTED`, dan `RETRY`;
+- reconciliation `OPEN`, `MATCHED`, `EXCEPTION`, dan manual `RESOLVED`;
+- finalisasi holding, buying capacity, dan acknowledged compliance position secara atomik;
+- immutable settlement ledger dengan dua unit legs dan dua cash legs; serta
+- idempotency command dan registry-reference uniqueness untuk mencegah double transfer.
 
 Default simulator bukan ketentuan pasar resmi. Parameter market harus dibaca dari MarketRuleset versioned.
 
@@ -121,6 +128,25 @@ Setiap trade memiliki BUY dan SELL TradeLeg dengan unit serta cash delta yang se
 - `GET /api/v1/market-data/replay?seriesCode=PTBAE-IND&compliancePeriod=2027`
 
 VWAP dihitung sebagai total notional dibagi total volume untuk window yang dipilih. Replay menerapkan trade berdasarkan `tradeSequence` dan menghasilkan rolling LTP/OHLCV serta final statistics yang dapat dibandingkan dengan snapshot.
+
+## Tahap 7 Settlement/SRUK
+
+Trade tetap berada di executed-pending sampai rangkaian DvP dan SRUK selesai. Alur normal adalah membuat SettlementInstruction dari trade, memproses DvP, mengirim pesan registry, lalu menerima acknowledgement dengan quantity yang persis sama. Reconciliation yang cocok membentuk empat ledger entry dan memperbarui holding serta posisi acknowledged tepat satu kali.
+
+- `POST /api/v1/settlements/from-trade/:tradeId`
+- `GET /api/v1/settlements?seriesCode=PTBAE-IND&compliancePeriod=2027`
+- `GET /api/v1/settlements/:settlementId`
+- `POST /api/v1/settlements/:settlementId/process`
+- `POST /api/v1/settlements/:settlementId/fail`
+- `POST /api/v1/settlements/:settlementId/retry`
+- `POST /api/v1/settlements/:settlementId/reverse`
+- `POST /api/v1/registry/messages/:registryMessageId/send`
+- `POST /api/v1/registry/messages/:registryMessageId/acknowledge`
+- `POST /api/v1/registry/messages/:registryMessageId/reject`
+- `POST /api/v1/registry/messages/:registryMessageId/retry`
+- `POST /api/v1/reconciliations/:reconciliationId/resolve`
+
+Semua command mutasi menerima `idempotencyKey`. Acknowledgement menerima `registryReference` unik dan `acknowledgedQuantity`. Quantity yang tidak cocok menghasilkan `EXCEPTION` tanpa perubahan posisi; pesan dapat dikirim ulang atau diselesaikan manual dengan quantity yang sudah dikoreksi.
 
 ## Dokumentasi
 

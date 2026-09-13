@@ -15,6 +15,7 @@ import {
   BalanceAccount,
   BalanceReservation,
   PositionSnapshot,
+  SettledTradeTransfer,
 } from './position.types';
 
 interface PositionBalanceRow extends QueryResultRow {
@@ -337,6 +338,66 @@ export class PositionBalanceService implements OnModuleDestroy {
     });
   }
 
+  async finalizeSettledTrade(
+    transfer: SettledTradeTransfer,
+    transaction?: PoolClient,
+  ): Promise<void> {
+    this.assertSettlementTransfer(transfer);
+    if (this.pool) {
+      const operation = (client: PoolClient) => this.finalizeDbSettledTrade(client, transfer);
+      return transaction ? operation(transaction) : this.withTransaction(operation);
+    }
+
+    const buyerKey = this.key(
+      transfer.buyerParticipantId,
+      transfer.seriesCode,
+      transfer.compliancePeriod,
+    );
+    const sellerKey = this.key(
+      transfer.sellerParticipantId,
+      transfer.seriesCode,
+      transfer.compliancePeriod,
+    );
+    const [firstKey, secondKey] = [buyerKey, sellerKey].sort();
+    await this.mutex.runExclusive(firstKey!, () =>
+      this.mutex.runExclusive(secondKey!, () => {
+        const buyerPosition = this.requirePosition(
+          transfer.buyerParticipantId,
+          transfer.seriesCode,
+          transfer.compliancePeriod,
+        );
+        const sellerPosition = this.requirePosition(
+          transfer.sellerParticipantId,
+          transfer.seriesCode,
+          transfer.compliancePeriod,
+        );
+        const buyerBalance = this.requireBalance(
+          transfer.buyerParticipantId,
+          transfer.seriesCode,
+          transfer.compliancePeriod,
+        );
+        const sellerBalance = this.requireBalance(
+          transfer.sellerParticipantId,
+          transfer.seriesCode,
+          transfer.compliancePeriod,
+        );
+        this.assertPendingSettlementBalances(buyerBalance, sellerBalance, transfer);
+
+        buyerBalance.executedBuyPending -= transfer.quantity;
+        buyerBalance.executedBuyPendingFunds -= transfer.notional;
+        buyerBalance.eligibleHolding += transfer.quantity;
+        buyerBalance.buyingCapacity -= transfer.notional;
+        buyerBalance.version += 1;
+        sellerBalance.executedSellPending -= transfer.quantity;
+        sellerBalance.eligibleHolding -= transfer.quantity;
+        sellerBalance.buyingCapacity += transfer.notional;
+        sellerBalance.version += 1;
+        buyerPosition.acknowledgedPurchases += transfer.quantity;
+        sellerPosition.acknowledgedSales += transfer.quantity;
+      }),
+    );
+  }
+
   private async withTransaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool!.connect();
     try {
@@ -352,6 +413,123 @@ export class PositionBalanceService implements OnModuleDestroy {
     }
   }
 
+  private async finalizeDbSettledTrade(
+    client: PoolClient,
+    transfer: SettledTradeTransfer,
+  ): Promise<void> {
+    const participantIds = [transfer.buyerParticipantId, transfer.sellerParticipantId].sort();
+    const states = new Map<string, { position: AnnualPositionInput; balance: BalanceAccount }>();
+    for (const participantId of participantIds) {
+      states.set(
+        participantId,
+        await this.requireDbState(
+          client,
+          participantId,
+          transfer.seriesCode,
+          transfer.compliancePeriod,
+          true,
+        ),
+      );
+    }
+    const buyer = states.get(transfer.buyerParticipantId)!;
+    const seller = states.get(transfer.sellerParticipantId)!;
+    this.assertPendingSettlementBalances(buyer.balance, seller.balance, transfer);
+
+    await client.query(
+      `UPDATE balance_accounts
+       SET executed_buy_pending = executed_buy_pending - $4,
+           executed_buy_pending_funds = executed_buy_pending_funds - $5,
+           eligible_holding = eligible_holding + $4,
+           buying_capacity = buying_capacity - $5,
+           version = version + 1,
+           updated_at = now()
+       WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`,
+      [
+        transfer.buyerParticipantId,
+        transfer.seriesCode,
+        transfer.compliancePeriod,
+        transfer.quantity,
+        transfer.notional,
+      ],
+    );
+    await client.query(
+      `UPDATE balance_accounts
+       SET executed_sell_pending = executed_sell_pending - $4,
+           eligible_holding = eligible_holding - $4,
+           buying_capacity = buying_capacity + $5,
+           version = version + 1,
+           updated_at = now()
+       WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`,
+      [
+        transfer.sellerParticipantId,
+        transfer.seriesCode,
+        transfer.compliancePeriod,
+        transfer.quantity,
+        transfer.notional,
+      ],
+    );
+    await client.query(
+      `UPDATE annual_compliance_positions
+       SET acknowledged_purchases = acknowledged_purchases + $4,
+           version = version + 1,
+           updated_at = now()
+       WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`,
+      [
+        transfer.buyerParticipantId,
+        transfer.seriesCode,
+        transfer.compliancePeriod,
+        transfer.quantity,
+      ],
+    );
+    await client.query(
+      `UPDATE annual_compliance_positions
+       SET acknowledged_sales = acknowledged_sales + $4,
+           version = version + 1,
+           updated_at = now()
+       WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`,
+      [
+        transfer.sellerParticipantId,
+        transfer.seriesCode,
+        transfer.compliancePeriod,
+        transfer.quantity,
+      ],
+    );
+  }
+
+  private assertSettlementTransfer(transfer: SettledTradeTransfer): void {
+    if (transfer.buyerParticipantId === transfer.sellerParticipantId) {
+      throw new BadRequestException('A settlement transfer cannot be a self-transfer');
+    }
+    for (const [field, value] of [
+      ['quantity', transfer.quantity],
+      ['notional', transfer.notional],
+    ] as const) {
+      if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new BadRequestException(`${field} must be a positive safe integer`);
+      }
+    }
+  }
+
+  private assertPendingSettlementBalances(
+    buyer: BalanceAccount,
+    seller: BalanceAccount,
+    transfer: SettledTradeTransfer,
+  ): void {
+    if (
+      buyer.executedBuyPending < transfer.quantity ||
+      buyer.executedBuyPendingFunds < transfer.notional ||
+      buyer.buyingCapacity < transfer.notional ||
+      seller.executedSellPending < transfer.quantity ||
+      seller.eligibleHolding < transfer.quantity
+    ) {
+      throw new BadRequestException({
+        code: 'SET-PENDING-BALANCE-MISMATCH',
+        message: 'Executed-pending balances do not support this settlement finalization',
+        tradeId: transfer.tradeId,
+      });
+    }
+  }
+
   private async requireDbState(
     queryable: Pick<Pool, 'query'> | PoolClient,
     participantId: string,
@@ -362,7 +540,7 @@ export class PositionBalanceService implements OnModuleDestroy {
     const result = await queryable.query<PositionBalanceRow>(
       `${this.positionSelectSql()}
        WHERE p.participant_id = $1 AND p.series_code = $2 AND p.compliance_period = $3
-       ${lock ? 'FOR UPDATE OF b' : ''}`,
+       ${lock ? 'FOR UPDATE OF p, b' : ''}`,
       [participantId, seriesCode, compliancePeriod],
     );
     const row = result.rows[0];

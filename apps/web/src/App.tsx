@@ -10,6 +10,10 @@ interface PositionSnapshot {
   availableToSell: number;
   buyNeedRemaining: number;
   availableBuyNeed: number;
+  acknowledgedPurchases: number;
+  acknowledgedSales: number;
+  executedSellPending: number;
+  executedBuyPending: number;
 }
 
 interface LimitOrder {
@@ -84,6 +88,29 @@ interface MarketDataSnapshot {
   };
 }
 
+interface SettlementBundle {
+  settlement: {
+    settlementId: string;
+    tradeId: string;
+    status: 'PENDING' | 'PROCESSING' | 'SETTLED' | 'FAILED' | 'REVERSED';
+    quantity: number;
+    cashAmount: number;
+    failureReason?: string;
+  };
+  registryMessage: {
+    registryMessageId: string;
+    status: 'QUEUED' | 'SENT' | 'ACKNOWLEDGED' | 'REJECTED' | 'RETRY';
+    attemptCount: number;
+    registryReference?: string;
+    errorMessage?: string;
+  };
+  reconciliation: {
+    status: 'OPEN' | 'MATCHED' | 'EXCEPTION' | 'RESOLVED';
+    exceptionReason?: string;
+  };
+  finalized: boolean;
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000/api/v1';
 const number = new Intl.NumberFormat('id-ID');
 const money = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
@@ -124,6 +151,7 @@ export function App() {
       close: null,
     },
   });
+  const [settlements, setSettlements] = useState<SettlementBundle[]>([]);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -138,18 +166,20 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData] = await Promise.all([
+      const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements] = await Promise.all([
         api<PositionSnapshot[]>('/positions?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<TriggerBook>('/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<MarketDataSnapshot>('/market-data/snapshot?seriesCode=PTBAE-IND&compliancePeriod=2027'),
+        api<SettlementBundle[]>('/settlements?seriesCode=PTBAE-IND&compliancePeriod=2027'),
       ]);
       setPositions(nextPositions);
       setBook(nextBook);
       setTrades(nextTrades);
       setTriggerBook(nextTriggerBook);
       setMarketData(nextMarketData);
+      setSettlements(nextSettlements);
       setError(undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tidak dapat memuat data');
@@ -225,6 +255,69 @@ export function App() {
     }
   }
 
+  async function postTradeAction(trade: Trade, bundle?: SettlementBundle) {
+    setBusy(true);
+    setNotice(undefined);
+    setError(undefined);
+    const key = `WEB-${trade.tradeId}-${Date.now()}`;
+    try {
+      if (!bundle) {
+        await api(`/settlements/from-trade/${trade.tradeId}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idempotencyKey: `${key}-create` }),
+        });
+        setNotice('Settlement instruction T+0 berhasil dibuat.');
+      } else if (bundle.settlement.status === 'PENDING') {
+        await api(`/settlements/${bundle.settlement.settlementId}/process`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idempotencyKey: `${key}-process` }),
+        });
+        setNotice('DvP settlement berhasil diproses; transfer SRUK masih menunggu.');
+      } else if (bundle.settlement.status === 'FAILED') {
+        await api(`/settlements/${bundle.settlement.settlementId}/retry`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idempotencyKey: `${key}-retry-settlement` }),
+        });
+        setNotice('Settlement dikembalikan ke antrean PENDING.');
+      } else if (bundle.registryMessage.status === 'QUEUED' || bundle.registryMessage.status === 'RETRY') {
+        await api(`/registry/messages/${bundle.registryMessage.registryMessageId}/send`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idempotencyKey: `${key}-send` }),
+        });
+        setNotice('Instruksi transfer sudah dikirim ke simulator SRUK.');
+      } else if (bundle.registryMessage.status === 'SENT') {
+        await api(`/registry/messages/${bundle.registryMessage.registryMessageId}/acknowledge`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idempotencyKey: `${key}-ack`, registryReference: `SRUK-${Date.now()}`, acknowledgedQuantity: trade.quantity }),
+        });
+        setNotice('SRUK acknowledged dan posisi kepatuhan telah diperbarui.');
+      } else if (bundle.registryMessage.status === 'REJECTED') {
+        await api(`/registry/messages/${bundle.registryMessage.registryMessageId}/retry`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idempotencyKey: `${key}-retry-registry` }),
+        });
+        setNotice('Pesan SRUK disiapkan untuk pengiriman ulang.');
+      }
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Proses post-trade gagal');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function nextPostTradeAction(bundle?: SettlementBundle): string {
+    if (!bundle) return 'Prepare settlement';
+    if (bundle.finalized) return 'Final';
+    if (bundle.settlement.status === 'REVERSED') return 'Reversed';
+    if (bundle.settlement.status === 'PENDING') return 'Process DvP';
+    if (bundle.settlement.status === 'FAILED') return 'Retry settlement';
+    if (bundle.registryMessage.status === 'QUEUED' || bundle.registryMessage.status === 'RETRY') return 'Send to SRUK';
+    if (bundle.registryMessage.status === 'SENT') return 'Acknowledge';
+    if (bundle.registryMessage.status === 'REJECTED') return 'Retry SRUK';
+    return 'No action';
+  }
+
   const openOrders = [...book.orders.bids, ...book.orders.asks].sort(
     (left, right) => left.limitPrice! - right.limitPrice!,
   );
@@ -235,9 +328,9 @@ export function App() {
         <div>
           <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
           <h1>PTBAE-IND</h1>
-          <p className="subtitle">Trade & Market Data · Compliance Period 2027</p>
+          <p className="subtitle">Settlement & SRUK · Compliance Period 2027</p>
         </div>
-        <span className="status">Tahap 6</span>
+        <span className="status">Tahap 7</span>
       </header>
 
       <section className="summary" aria-label="Ringkasan pasar">
@@ -252,6 +345,11 @@ export function App() {
       <section className="panel orders-panel">
         <div className="panel-heading compact"><div><p className="eyebrow">MARKET DATA SNAPSHOT</p><h2>{marketData.state === 'TRADING' ? 'Live statistics' : 'No-trade state'}</h2></div><p>Reference price tetap terpisah dari LTP dan tidak digunakan untuk membuat trade sintetis.</p></div>
         <div className="table-wrap"><table><thead><tr><th>Reference</th><th>LTP</th><th>Best bid</th><th>Best ask</th><th>Spread</th><th>VWAP</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th></tr></thead><tbody><tr><td>{money.format(marketData.referencePrice)}</td><td>{priceOrDash(marketData.lastTradedPrice)}</td><td>{priceOrDash(marketData.topOfBook.bestBid?.price ?? null)}</td><td>{priceOrDash(marketData.topOfBook.bestAsk?.price ?? null)}</td><td>{priceOrDash(marketData.topOfBook.spread)}</td><td>{priceOrDash(marketData.statistics.vwap)}</td><td>{priceOrDash(marketData.statistics.open)}</td><td>{priceOrDash(marketData.statistics.high)}</td><td>{priceOrDash(marketData.statistics.low)}</td><td>{priceOrDash(marketData.statistics.close)}</td><td>{number.format(marketData.statistics.volume)}</td></tr></tbody></table></div>
+      </section>
+
+      <section className="panel orders-panel">
+        <div className="panel-heading compact"><div><p className="eyebrow">T+0 DVP · SRUK ADAPTER</p><h2>Settlement & reconciliation</h2></div><p>Holding dan posisi acknowledged baru berubah setelah kuantitas SRUK cocok.</p></div>
+        <div className="table-wrap"><table><thead><tr><th>Trade</th><th>Buyer → Seller</th><th>Settlement</th><th>SRUK</th><th>Reconciliation</th><th>Attempt</th><th></th></tr></thead><tbody>{trades.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada trade untuk diselesaikan</td></tr> : [...trades].reverse().map((trade) => { const bundle = settlements.find((item) => item.settlement.tradeId === trade.tradeId); return <tr key={trade.tradeId}><td>#{trade.tradeSequence}<small>{number.format(trade.quantity)} tCO₂e</small></td><td>{trade.buyerParticipantId} → {trade.sellerParticipantId}</td><td><span className={`pill ${bundle?.settlement.status === 'FAILED' ? 'deficit' : bundle?.settlement.status === 'SETTLED' ? 'surplus' : 'balanced'}`}>{bundle?.settlement.status ?? 'NOT PREPARED'}</span></td><td>{bundle?.registryMessage.status ?? '—'}{bundle?.registryMessage.registryReference ? <small>{bundle.registryMessage.registryReference}</small> : null}</td><td>{bundle?.reconciliation.status ?? '—'}{bundle?.reconciliation.exceptionReason ? <small>{bundle.reconciliation.exceptionReason}</small> : null}</td><td>{bundle?.registryMessage.attemptCount ?? 0}</td><td><button className="cancel post-trade-action" disabled={busy || bundle?.finalized || bundle?.settlement.status === 'REVERSED'} onClick={() => void postTradeAction(trade, bundle)}>{nextPostTradeAction(bundle)}</button></td></tr>; })}</tbody></table></div>
       </section>
 
       <section className="trading-grid">
@@ -297,8 +395,8 @@ export function App() {
       </section>
 
       <section className="panel positions-panel">
-        <div className="panel-heading"><div><p className="eyebrow">VERIFIED POSITION</p><h2>Posisi peserta</h2></div><p>Available sell dan buy need langsung berkurang saat order aktif membuat reservation.</p></div>
-        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Allocated quota</th><th>Verified emission</th><th>Net position</th><th>Available sell</th><th>Buy need</th></tr></thead><tbody>{positions.map((position) => <tr key={position.participantId}><td><strong>{position.participantName}</strong><small>{position.participantId}</small></td><td>{number.format(position.allocatedQuota)}</td><td>{number.format(position.verifiedEmission)}</td><td><span className={`pill ${position.positionStatus.toLowerCase()}`}>{signed(position.netPosition)}</span></td><td>{number.format(position.availableToSell)}</td><td>{number.format(position.availableBuyNeed)}</td></tr>)}</tbody></table></div>
+        <div className="panel-heading"><div><p className="eyebrow">VERIFIED POSITION</p><h2>Posisi peserta</h2></div><p>Executed-pending terpisah dari acknowledged sampai rekonsiliasi SRUK final.</p></div>
+        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Allocated</th><th>Emission</th><th>Net position</th><th>Executed pending</th><th>Acknowledged B/S</th><th>Available sell</th><th>Buy need</th></tr></thead><tbody>{positions.map((position) => <tr key={position.participantId}><td><strong>{position.participantName}</strong><small>{position.participantId}</small></td><td>{number.format(position.allocatedQuota)}</td><td>{number.format(position.verifiedEmission)}</td><td><span className={`pill ${position.positionStatus.toLowerCase()}`}>{signed(position.netPosition)}</span></td><td>B {number.format(position.executedBuyPending)} / S {number.format(position.executedSellPending)}</td><td>{number.format(position.acknowledgedPurchases)} / {number.format(position.acknowledgedSales)}</td><td>{number.format(position.availableToSell)}</td><td>{number.format(position.availableBuyNeed)}</td></tr>)}</tbody></table></div>
       </section>
 
       <footer>Default simulator · Bukan penetapan ketentuan resmi pasar</footer>

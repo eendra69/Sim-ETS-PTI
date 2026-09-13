@@ -151,6 +151,10 @@ button {
   border: 0;
 }
 
+.post-trade-action {
+  white-space: nowrap;
+}
+
 .ticket > button {
   width: calc(100% - 64px);
   margin: 0 32px;

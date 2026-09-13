@@ -71,3 +71,13 @@ export interface BalanceReservation {
   releasedAt?: string;
   consumedAt?: string;
 }
+
+export interface SettledTradeTransfer {
+  tradeId: string;
+  buyerParticipantId: string;
+  sellerParticipantId: string;
+  seriesCode: string;
+  compliancePeriod: number;
+  quantity: number;
+  notional: number;
+}
