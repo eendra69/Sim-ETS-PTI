@@ -1,8 +1,8 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsPositive, IsString, MaxLength, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsPositive, IsString, MaxLength, Min } from 'class-validator';
 import { OrderSide, OrderType, TimeInForce } from '../limit-order.types';
 
-export class CreateLimitOrderDto {
+export class CreateOrderDto {
   @IsString()
   @MaxLength(80)
   participantId!: string;
@@ -22,7 +22,7 @@ export class CreateLimitOrderDto {
   @IsIn(['BUY', 'SELL'])
   side!: OrderSide;
 
-  @IsIn(['LIMIT'])
+  @IsIn(['LIMIT', 'MARKET'])
   orderType!: OrderType;
 
   @Type(() => Number)
@@ -30,11 +30,18 @@ export class CreateLimitOrderDto {
   @IsPositive()
   quantity!: number;
 
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @IsPositive()
-  limitPrice!: number;
+  limitPrice?: number;
 
-  @IsIn(['DAY', 'GTC'])
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  protectionPrice?: number;
+
+  @IsIn(['DAY', 'GTC', 'IOC'])
   timeInForce!: TimeInForce;
 }

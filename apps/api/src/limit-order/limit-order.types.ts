@@ -1,12 +1,13 @@
 export type OrderSide = 'BUY' | 'SELL';
-export type OrderType = 'LIMIT';
-export type TimeInForce = 'DAY' | 'GTC';
+export type OrderType = 'LIMIT' | 'MARKET';
+export type TimeInForce = 'DAY' | 'GTC' | 'IOC';
 export type LimitOrderStatus =
   | 'OPEN'
   | 'PARTIALLY_FILLED'
   | 'FILLED'
   | 'CANCELLED'
-  | 'EXPIRED';
+  | 'EXPIRED'
+  | 'CANCELLED_REMAINDER';
 
 export interface LimitOrder {
   orderId: string;
@@ -19,7 +20,8 @@ export interface LimitOrder {
   rulesetId: string;
   quantity: number;
   remainingQuantity: number;
-  limitPrice: number;
+  limitPrice?: number;
+  protectionPrice?: number;
   timeInForce: TimeInForce;
   status: LimitOrderStatus;
   reservationId: string;
@@ -57,6 +59,8 @@ export interface MarketRuleset {
   tickSize: number;
   lotSize: number;
   currency: 'IDR';
+  marketTimeInForce: 'IOC';
+  marketProtectionRequired: true;
 }
 
 export interface Trade {

@@ -16,10 +16,12 @@ interface LimitOrder {
   orderId: string;
   participantId: string;
   side: 'BUY' | 'SELL';
+  orderType: 'LIMIT' | 'MARKET';
   remainingQuantity: number;
-  limitPrice: number;
-  timeInForce: 'DAY' | 'GTC';
-  status: 'OPEN' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'EXPIRED';
+  limitPrice?: number;
+  protectionPrice?: number;
+  timeInForce: 'DAY' | 'GTC' | 'IOC';
+  status: 'OPEN' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'EXPIRED' | 'CANCELLED_REMAINDER';
 }
 
 interface Trade {
@@ -69,9 +71,11 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [participantId, setParticipantId] = useState('IND-A');
   const [side, setSide] = useState<'BUY' | 'SELL'>('SELL');
+  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT');
   const [quantity, setQuantity] = useState(5_000);
   const [limitPrice, setLimitPrice] = useState(75_000);
-  const [timeInForce, setTimeInForce] = useState<'DAY' | 'GTC'>('DAY');
+  const [protectionPrice, setProtectionPrice] = useState(76_000);
+  const [timeInForce, setTimeInForce] = useState<'DAY' | 'GTC' | 'IOC'>('DAY');
 
   const refresh = useCallback(async () => {
     try {
@@ -116,16 +120,17 @@ export function App() {
           seriesCode: 'PTBAE-IND',
           compliancePeriod: 2027,
           side,
-          orderType: 'LIMIT',
+          orderType,
           quantity,
-          limitPrice,
-          timeInForce,
+          ...(orderType === 'LIMIT'
+            ? { limitPrice, timeInForce }
+            : { protectionPrice, timeInForce: 'IOC' }),
         }),
       });
       setNotice(
         order.remainingQuantity === 0
-          ? `${side} LIMIT terisi penuh.`
-          : `${side} LIMIT diterima dengan status ${order.status}.`,
+          ? `${side} ${orderType} terisi penuh.`
+          : `${side} ${orderType} selesai dengan status ${order.status}.`,
       );
       await refresh();
     } catch (reason) {
@@ -150,7 +155,7 @@ export function App() {
   }
 
   const openOrders = [...book.orders.bids, ...book.orders.asks].sort(
-    (left, right) => left.limitPrice - right.limitPrice,
+    (left, right) => left.limitPrice! - right.limitPrice!,
   );
 
   return (
@@ -159,9 +164,9 @@ export function App() {
         <div>
           <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
           <h1>PTBAE-IND</h1>
-          <p className="subtitle">Matching Engine · Compliance Period 2027</p>
+          <p className="subtitle">LIMIT & MARKET Order · Compliance Period 2027</p>
         </div>
-        <span className="status">Tahap 3</span>
+        <span className="status">Tahap 4</span>
       </header>
 
       <section className="summary" aria-label="Ringkasan pasar">
@@ -176,17 +181,18 @@ export function App() {
       <section className="trading-grid">
         <form className="panel ticket" onSubmit={submitOrder}>
           <div className="panel-heading compact">
-            <div><p className="eyebrow">ORDER ENTRY</p><h2>LIMIT ticket</h2></div>
+            <div><p className="eyebrow">ORDER ENTRY</p><h2>{orderType} ticket</h2></div>
           </div>
           <div className="form-grid">
             <label>Peserta<select value={participantId} onChange={(event) => setParticipantId(event.target.value)}>{positions.map((position) => <option key={position.participantId} value={position.participantId}>{position.participantId} · {position.participantName}</option>)}</select></label>
+            <label>Jenis order<select value={orderType} onChange={(event) => { const next = event.target.value as 'LIMIT' | 'MARKET'; setOrderType(next); setTimeInForce(next === 'MARKET' ? 'IOC' : 'DAY'); }}><option>LIMIT</option><option>MARKET</option></select></label>
             <label>Sisi<select value={side} onChange={(event) => setSide(event.target.value as 'BUY' | 'SELL')}><option>SELL</option><option>BUY</option></select></label>
             <label>Quantity<input type="number" min="1" step="1" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} /></label>
-            <label>Limit price<input type="number" min="60000" max="90000" step="200" value={limitPrice} onChange={(event) => setLimitPrice(Number(event.target.value))} /></label>
-            <label>Time in force<select value={timeInForce} onChange={(event) => setTimeInForce(event.target.value as 'DAY' | 'GTC')}><option>DAY</option><option>GTC</option></select></label>
+            {orderType === 'LIMIT' ? <label>Limit price<input type="number" min="60000" max="90000" step="200" value={limitPrice} onChange={(event) => setLimitPrice(Number(event.target.value))} /></label> : <label>{side === 'BUY' ? 'Protection ceiling' : 'Protection floor'}<input type="number" min="60000" max="90000" step="200" value={protectionPrice} onChange={(event) => setProtectionPrice(Number(event.target.value))} /></label>}
+            <label>Time in force<select value={timeInForce} disabled={orderType === 'MARKET'} onChange={(event) => setTimeInForce(event.target.value as 'DAY' | 'GTC')}><option>DAY</option><option>GTC</option>{orderType === 'MARKET' ? <option>IOC</option> : null}</select></label>
           </div>
-          <button type="submit" disabled={busy}>{busy ? 'Memproses…' : `Kirim ${side} LIMIT`}</button>
-          <small className="hint">Estimasi exposure: {money.format(quantity * limitPrice)}</small>
+          <button type="submit" disabled={busy}>{busy ? 'Memproses…' : `Kirim ${side} ${orderType}`}</button>
+          <small className="hint">Maximum exposure: {money.format(quantity * (orderType === 'LIMIT' ? limitPrice : protectionPrice))}</small>
         </form>
 
         <section className="panel book-panel">
@@ -200,7 +206,7 @@ export function App() {
 
       <section className="panel orders-panel">
         <div className="panel-heading compact"><div><p className="eyebrow">PRICE–TIME QUEUE</p><h2>Open orders</h2></div><p>Hanya sisa order yang belum terisi yang tampil di antrean.</p></div>
-        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Side</th><th>Price</th><th>Remaining</th><th>TIF</th><th></th></tr></thead><tbody>{openOrders.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada order aktif</td></tr> : openOrders.map((order) => <tr key={order.orderId}><td>{order.participantId}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.limitPrice)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Side</th><th>Price</th><th>Remaining</th><th>TIF</th><th></th></tr></thead><tbody>{openOrders.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada order aktif</td></tr> : openOrders.map((order) => <tr key={order.orderId}><td>{order.participantId}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.limitPrice!)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
       </section>
 
       <section className="panel orders-panel">

@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
-import { CreateLimitOrderDto } from './dto/create-limit-order.dto';
+import { CreateOrderDto } from './dto/create-order.dto';
 import { QueryOrderBookDto } from './dto/query-order-book.dto';
 import { LimitOrderService } from './limit-order.service';
 import { LimitOrder, MarketRuleset, OrderBookSnapshot, Trade } from './limit-order.types';
@@ -14,7 +14,7 @@ export class LimitOrderController {
   }
 
   @Post('orders')
-  submit(@Body() dto: CreateLimitOrderDto): Promise<LimitOrder> {
+  submit(@Body() dto: CreateOrderDto): Promise<LimitOrder> {
     return this.limitOrderService.submit(dto);
   }
 

@@ -11,13 +11,15 @@ export const BASELINE_MARKET_RULESET: MarketRuleset = {
   tickSize: 200,
   lotSize: 1,
   currency: 'IDR',
+  marketTimeInForce: 'IOC',
+  marketProtectionRequired: true,
 };
 
 export function validateAgainstRuleset(
   seriesCode: string,
   compliancePeriod: number,
   quantity: number,
-  limitPrice: number,
+  price: number,
 ): void {
   const rules = BASELINE_MARKET_RULESET;
   if (seriesCode !== rules.seriesCode || compliancePeriod !== rules.compliancePeriod) {
@@ -32,16 +34,16 @@ export function validateAgainstRuleset(
       message: `Quantity must be a multiple of ${rules.lotSize}`,
     });
   }
-  if (limitPrice < rules.minimumPrice || limitPrice > rules.maximumPrice) {
+  if (price < rules.minimumPrice || price > rules.maximumPrice) {
     throw new BadRequestException({
       code: 'ORD-PRICE-OUTSIDE-BAND',
-      message: `Limit price must be between ${rules.minimumPrice} and ${rules.maximumPrice}`,
+      message: `Order price must be between ${rules.minimumPrice} and ${rules.maximumPrice}`,
     });
   }
-  if (limitPrice % rules.tickSize !== 0) {
+  if (price % rules.tickSize !== 0) {
     throw new BadRequestException({
       code: 'ORD-INVALID-TICK',
-      message: `Limit price must be a multiple of ${rules.tickSize}`,
+      message: `Order price must be a multiple of ${rules.tickSize}`,
     });
   }
 }

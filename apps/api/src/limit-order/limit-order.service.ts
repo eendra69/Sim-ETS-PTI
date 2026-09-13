@@ -8,13 +8,14 @@ import { randomUUID } from 'node:crypto';
 import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { KeyedMutex } from '../common/keyed-mutex';
 import { PositionBalanceService } from '../position-balance/position-balance.service';
-import { CreateLimitOrderDto } from './dto/create-limit-order.dto';
+import { CreateOrderDto } from './dto/create-order.dto';
 import {
   LimitOrder,
   LimitOrderStatus,
   OrderBookLevel,
   OrderBookSnapshot,
   OrderSide,
+  OrderType,
   Trade,
 } from './limit-order.types';
 import { BASELINE_MARKET_RULESET, validateAgainstRuleset } from './market-ruleset';
@@ -27,12 +28,13 @@ interface LimitOrderRow extends QueryResultRow {
   series_code: string;
   compliance_period: number;
   side: OrderSide;
-  order_type: 'LIMIT';
+  order_type: OrderType;
   ruleset_id: string;
   quantity: string;
   remaining_quantity: string;
-  limit_price: string;
-  time_in_force: 'DAY' | 'GTC';
+  limit_price: string | null;
+  protection_price: string | null;
+  time_in_force: 'DAY' | 'GTC' | 'IOC';
   status: LimitOrderStatus;
   reservation_id: string;
   priority_sequence: string;
@@ -87,7 +89,7 @@ export class LimitOrderService implements OnModuleDestroy {
     return BASELINE_MARKET_RULESET;
   }
 
-  async submit(dto: CreateLimitOrderDto): Promise<LimitOrder> {
+  async submit(dto: CreateOrderDto): Promise<LimitOrder> {
     return this.mutex.runExclusive(
       `client:${dto.participantId}:${dto.clientOrderId}`,
       async () => {
@@ -97,14 +99,15 @@ export class LimitOrderService implements OnModuleDestroy {
           return isActive(existing) ? this.executeMatches(existing.orderId) : existing;
         }
 
+        const reservationPrice = this.validateOrderCommand(dto);
         validateAgainstRuleset(
           dto.seriesCode,
           dto.compliancePeriod,
           dto.quantity,
-          dto.limitPrice,
+          reservationPrice,
         );
 
-        const maximumNotional = dto.quantity * dto.limitPrice;
+        const maximumNotional = dto.quantity * reservationPrice;
         if (!Number.isSafeInteger(maximumNotional)) {
           throw new BadRequestException({
             code: 'ORD-NOTIONAL-OVERFLOW',
@@ -112,7 +115,7 @@ export class LimitOrderService implements OnModuleDestroy {
           });
         }
 
-        const orderReference = `LIMIT:${dto.clientOrderId}`;
+        const orderReference = `${dto.orderType}:${dto.clientOrderId}`;
         const reservation =
           dto.side === 'SELL'
             ? await this.positionBalanceService.reserveSell({
@@ -252,13 +255,13 @@ export class LimitOrderService implements OnModuleDestroy {
       .filter((order) => order.side === 'BUY')
       .sort(
         (left, right) =>
-          right.limitPrice - left.limitPrice || left.prioritySequence - right.prioritySequence,
+          right.limitPrice! - left.limitPrice! || left.prioritySequence - right.prioritySequence,
       );
     const asks = open
       .filter((order) => order.side === 'SELL')
       .sort(
         (left, right) =>
-          left.limitPrice - right.limitPrice || left.prioritySequence - right.prioritySequence,
+          left.limitPrice! - right.limitPrice! || left.prioritySequence - right.prioritySequence,
       );
 
     return {
@@ -277,7 +280,7 @@ export class LimitOrderService implements OnModuleDestroy {
     if (!isActive(incoming)) return { ...incoming };
 
     const plans = planMatches(incoming, [...this.orders.values()]);
-    if (plans.length === 0) return { ...incoming };
+    if (plans.length === 0) return this.finalizeMemoryMarketRemainder(incoming);
     const matchEventId = randomUUID();
 
     for (const plan of plans) {
@@ -295,7 +298,7 @@ export class LimitOrderService implements OnModuleDestroy {
       await this.positionBalanceService.consumeReservation(
         buyer.reservationId,
         quantity,
-        this.safeNotional(quantity, buyer.limitPrice),
+        this.safeNotional(quantity, this.reservationPrice(buyer)),
         notional,
       );
       await this.positionBalanceService.consumeReservation(seller.reservationId, quantity, 0, 0);
@@ -322,7 +325,7 @@ export class LimitOrderService implements OnModuleDestroy {
       };
       this.trades.set(trade.tradeId, trade);
     }
-    return { ...incoming };
+    return this.finalizeMemoryMarketRemainder(incoming);
   }
 
   private async executeDbMatches(orderId: string, marketKey: string): Promise<LimitOrder> {
@@ -348,6 +351,7 @@ export class LimitOrderService implements OnModuleDestroy {
          WHERE series_code = $1
            AND compliance_period = $2
            AND side = $3
+           AND order_type = 'LIMIT'
            AND status IN ('OPEN', 'PARTIALLY_FILLED')
            AND participant_id <> $4
            AND limit_price ${priceOperator} $5
@@ -359,7 +363,7 @@ export class LimitOrderService implements OnModuleDestroy {
           incoming.compliancePeriod,
           incoming.side === 'BUY' ? 'SELL' : 'BUY',
           incoming.participantId,
-          incoming.limitPrice,
+          this.executionBoundary(incoming),
           incoming.orderId,
         ],
       );
@@ -368,6 +372,7 @@ export class LimitOrderService implements OnModuleDestroy {
         restingResult.rows.map((row) => this.mapOrder(row)),
       );
       if (plans.length === 0) {
+        incoming = await this.finalizeDbMarketRemainder(client, incoming);
         await client.query('COMMIT');
         return incoming;
       }
@@ -391,7 +396,7 @@ export class LimitOrderService implements OnModuleDestroy {
         await this.positionBalanceService.consumeReservation(
           buyer.reservationId,
           quantity,
-          this.safeNotional(quantity, buyer.limitPrice),
+          this.safeNotional(quantity, this.reservationPrice(buyer)),
           notional,
           client,
         );
@@ -427,6 +432,7 @@ export class LimitOrderService implements OnModuleDestroy {
         );
       }
 
+      incoming = await this.finalizeDbMarketRemainder(client, incoming);
       await client.query('COMMIT');
       return incoming;
     } catch (error) {
@@ -449,6 +455,36 @@ export class LimitOrderService implements OnModuleDestroy {
     };
     this.orders.set(order.orderId, updated);
     return updated;
+  }
+
+  private async finalizeMemoryMarketRemainder(order: LimitOrder): Promise<LimitOrder> {
+    if (order.orderType !== 'MARKET' || order.remainingQuantity === 0) return { ...order };
+    await this.positionBalanceService.releaseReservation(order.reservationId);
+    const now = new Date().toISOString();
+    const cancelled: LimitOrder = {
+      ...order,
+      status: 'CANCELLED_REMAINDER',
+      updatedAt: now,
+      closedAt: now,
+    };
+    this.orders.set(order.orderId, cancelled);
+    return { ...cancelled };
+  }
+
+  private async finalizeDbMarketRemainder(
+    client: PoolClient,
+    order: LimitOrder,
+  ): Promise<LimitOrder> {
+    if (order.orderType !== 'MARKET' || order.remainingQuantity === 0) return order;
+    await this.positionBalanceService.releaseReservation(order.reservationId, client);
+    const result = await client.query<LimitOrderRow>(
+      `UPDATE limit_orders
+       SET status = 'CANCELLED_REMAINDER', updated_at = now(), closed_at = now()
+       WHERE order_id = $1
+       RETURNING *`,
+      [order.orderId],
+    );
+    return this.mapOrder(result.rows[0]!);
   }
 
   private async updateDbOrderFill(
@@ -534,7 +570,7 @@ export class LimitOrderService implements OnModuleDestroy {
     }
   }
 
-  private async insertOrder(dto: CreateLimitOrderDto, reservationId: string): Promise<LimitOrder> {
+  private async insertOrder(dto: CreateOrderDto, reservationId: string): Promise<LimitOrder> {
     if (!this.pool) {
       const now = new Date().toISOString();
       const order: LimitOrder = {
@@ -555,8 +591,9 @@ export class LimitOrderService implements OnModuleDestroy {
     const result = await this.pool.query<LimitOrderRow>(
       `INSERT INTO limit_orders (
          participant_id, client_order_id, series_code, compliance_period, side, order_type,
-         ruleset_id, quantity, remaining_quantity, limit_price, time_in_force, status, reservation_id
-       ) VALUES ($1, $2, $3, $4, $5, 'LIMIT', $6, $7, $7, $8, $9, 'OPEN', $10)
+         ruleset_id, quantity, remaining_quantity, limit_price, protection_price,
+         time_in_force, status, reservation_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, 'OPEN', $12)
        RETURNING *`,
       [
         dto.participantId,
@@ -564,9 +601,11 @@ export class LimitOrderService implements OnModuleDestroy {
         dto.seriesCode,
         dto.compliancePeriod,
         dto.side,
+        dto.orderType,
         BASELINE_MARKET_RULESET.rulesetId,
         dto.quantity,
         dto.limitPrice,
+        dto.protectionPrice,
         dto.timeInForce,
         reservationId,
       ],
@@ -603,6 +642,7 @@ export class LimitOrderService implements OnModuleDestroy {
           (order) =>
             order.seriesCode === seriesCode &&
             order.compliancePeriod === compliancePeriod &&
+            order.orderType === 'LIMIT' &&
             isActive(order),
         )
         .map((order) => ({ ...order }));
@@ -611,6 +651,7 @@ export class LimitOrderService implements OnModuleDestroy {
       `SELECT * FROM limit_orders
        WHERE series_code = $1
          AND compliance_period = $2
+         AND order_type = 'LIMIT'
          AND status IN ('OPEN', 'PARTIALLY_FILLED')`,
       [seriesCode, compliancePeriod],
     );
@@ -645,19 +686,54 @@ export class LimitOrderService implements OnModuleDestroy {
   private aggregateLevels(orders: LimitOrder[]): OrderBookLevel[] {
     const levels = new Map<number, OrderBookLevel>();
     for (const order of orders) {
-      const level = levels.get(order.limitPrice) ?? {
-        price: order.limitPrice,
+      const level = levels.get(order.limitPrice!) ?? {
+        price: order.limitPrice!,
         quantity: 0,
         orderCount: 0,
       };
       level.quantity += order.remainingQuantity;
       level.orderCount += 1;
-      levels.set(order.limitPrice, level);
+      levels.set(order.limitPrice!, level);
     }
     return [...levels.values()];
   }
 
-  private assertSamePayload(existing: LimitOrder, dto: CreateLimitOrderDto): void {
+  private validateOrderCommand(dto: CreateOrderDto): number {
+    if (dto.orderType === 'LIMIT') {
+      if (
+        dto.limitPrice === undefined ||
+        dto.protectionPrice !== undefined ||
+        !['DAY', 'GTC'].includes(dto.timeInForce)
+      ) {
+        throw new BadRequestException({
+          code: 'ORD-INVALID-LIMIT-FIELDS',
+          message: 'LIMIT requires limitPrice, DAY/GTC, and no protectionPrice',
+        });
+      }
+      return dto.limitPrice;
+    }
+    if (
+      dto.limitPrice !== undefined ||
+      dto.protectionPrice === undefined ||
+      dto.timeInForce !== 'IOC'
+    ) {
+      throw new BadRequestException({
+        code: 'ORD-INVALID-MARKET-FIELDS',
+        message: 'MARKET requires protectionPrice and IOC, and does not accept limitPrice',
+      });
+    }
+    return dto.protectionPrice;
+  }
+
+  private reservationPrice(order: LimitOrder): number {
+    return order.orderType === 'MARKET' ? order.protectionPrice! : order.limitPrice!;
+  }
+
+  private executionBoundary(order: LimitOrder): number {
+    return this.reservationPrice(order);
+  }
+
+  private assertSamePayload(existing: LimitOrder, dto: CreateOrderDto): void {
     if (
       existing.seriesCode !== dto.seriesCode ||
       existing.compliancePeriod !== dto.compliancePeriod ||
@@ -665,6 +741,7 @@ export class LimitOrderService implements OnModuleDestroy {
       existing.orderType !== dto.orderType ||
       existing.quantity !== dto.quantity ||
       existing.limitPrice !== dto.limitPrice ||
+      existing.protectionPrice !== dto.protectionPrice ||
       existing.timeInForce !== dto.timeInForce
     ) {
       throw new BadRequestException({
@@ -697,7 +774,12 @@ export class LimitOrderService implements OnModuleDestroy {
       rulesetId: row.ruleset_id,
       quantity: this.toSafeNumber(row.quantity, 'quantity'),
       remainingQuantity: this.toSafeNumber(row.remaining_quantity, 'remaining_quantity'),
-      limitPrice: this.toSafeNumber(row.limit_price, 'limit_price'),
+      ...(row.limit_price !== null
+        ? { limitPrice: this.toSafeNumber(row.limit_price, 'limit_price') }
+        : {}),
+      ...(row.protection_price !== null
+        ? { protectionPrice: this.toSafeNumber(row.protection_price, 'protection_price') }
+        : {}),
       timeInForce: row.time_in_force,
       status: row.status,
       reservationId: row.reservation_id,

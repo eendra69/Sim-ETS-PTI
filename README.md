@@ -4,7 +4,7 @@ Prototype untuk menghitung posisi kepatuhan tahunan dan mensimulasikan perdagang
 
 ## Status
 
-Tahap 1 dan 2 telah lolos gate. Tahap 3 Matching Engine menyediakan:
+Tahap 1 sampai 3 telah lolos gate. Tahap 4 MARKET Order menyediakan:
 
 - monorepo TypeScript dengan NestJS API dan React web;
 - formula posisi tahunan, batas jual, dan kebutuhan beli;
@@ -21,8 +21,11 @@ Tahap 1 dan 2 telah lolos gate. Tahap 3 Matching Engine menyediakan:
 - harga eksekusi mengikuti resting order;
 - full fill, partial fill, dan multi-order fill;
 - pencegahan self-match;
-- trade dan match-event ledger yang immutable; serta
-- pemindahan reservation ke executed-pending secara atomik saat matching.
+- trade dan match-event ledger yang immutable;
+- pemindahan reservation ke executed-pending secara atomik saat matching;
+- MARKET BUY/SELL dengan protection ceiling/floor wajib;
+- IOC multi-level sweep tanpa menempatkan MARKET ke visible book; dan
+- `CANCELLED_REMAINDER` serta pelepasan reservation yang tidak terpakai.
 
 Default simulator bukan ketentuan pasar resmi. Parameter market harus dibaca dari MarketRuleset versioned.
 
@@ -81,6 +84,12 @@ Ruleset prototype saat ini: reference price Rp75.000, price band Rp60.000–Rp90
 - `GET /api/v1/trades/:tradeId`
 
 Trade berstatus `EXECUTED` belum mengubah physical holding atau acknowledged compliance position. Kuantitas dan dana dipindahkan ke executed-pending sampai tahap Settlement/SRUK diselesaikan.
+
+## Tahap 4 MARKET Order
+
+MARKET memakai endpoint submission yang sama, `POST /api/v1/orders`, dengan `orderType: "MARKET"`, `timeInForce: "IOC"`, dan `protectionPrice`. MARKET tidak menerima `limitPrice`. Untuk BUY, protectionPrice adalah harga maksimum; untuk SELL, protectionPrice adalah harga minimum.
+
+Jika depth habis atau protection tercapai, bagian yang sempat terisi tetap menjadi trade dan sisa quantity berstatus `CANCELLED_REMAINDER`. MARKET yang tidak menghasilkan trade juga berakhir dengan status tersebut dan tidak masuk order book.
 
 ## Dokumentasi
 

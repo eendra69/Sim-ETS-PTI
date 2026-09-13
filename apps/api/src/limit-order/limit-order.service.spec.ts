@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { PositionBalanceService } from '../position-balance/position-balance.service';
-import { CreateLimitOrderDto } from './dto/create-limit-order.dto';
+import { CreateOrderDto } from './dto/create-order.dto';
 import { LimitOrderService } from './limit-order.service';
 
 describe('LimitOrderService', () => {
@@ -17,7 +17,7 @@ describe('LimitOrderService', () => {
     clientOrderId: string,
     limitPrice: number,
     quantity = 5_000,
-  ): CreateLimitOrderDto => ({
+  ): CreateOrderDto => ({
     participantId,
     clientOrderId,
     seriesCode: 'PTBAE-IND',
@@ -27,6 +27,24 @@ describe('LimitOrderService', () => {
     quantity,
     limitPrice,
     timeInForce: 'DAY',
+  });
+
+  const market = (
+    participantId: string,
+    clientOrderId: string,
+    side: 'BUY' | 'SELL',
+    quantity: number,
+    protectionPrice: number,
+  ): CreateOrderDto => ({
+    participantId,
+    clientOrderId,
+    seriesCode: 'PTBAE-IND',
+    compliancePeriod: 2027,
+    side,
+    orderType: 'MARKET',
+    quantity,
+    protectionPrice,
+    timeInForce: 'IOC',
   });
 
   it('sorts asks by price, then FIFO within the same price', async () => {
@@ -212,5 +230,98 @@ describe('LimitOrderService', () => {
     expect((await service.getOrderBook('PTBAE-IND', 2027)).bids).toEqual([
       { price: 75_000, quantity: 6_000, orderCount: 1 },
     ]);
+  });
+
+  it('sweeps multiple price levels with a protected BUY MARKET order', async () => {
+    await service.submit(sell('IND-A', 'MARKET-ASK-75', 75_000, 30_000));
+    await service.submit(sell('IND-B', 'MARKET-ASK-76', 76_000, 20_000));
+    await service.submit(sell('IND-C', 'MARKET-ASK-78', 78_000, 10_000));
+
+    const buy = await service.submit(market('IND-D', 'MARKET-BUY-FULL', 'BUY', 60_000, 90_000));
+    const trades = await service.listTrades('PTBAE-IND', 2027);
+
+    expect(buy).toMatchObject({ status: 'FILLED', remainingQuantity: 0 });
+    expect(trades.map(({ quantity, price }) => ({ quantity, price }))).toEqual([
+      { quantity: 30_000, price: 75_000 },
+      { quantity: 20_000, price: 76_000 },
+      { quantity: 10_000, price: 78_000 },
+    ]);
+    expect(await positionService.getPosition('IND-D', 'PTBAE-IND', 2027)).toMatchObject({
+      reservedBuyFunds: 0,
+      executedBuyPending: 60_000,
+      executedBuyPendingFunds: 4_550_000_000,
+      availableBuyNeed: 0,
+    });
+  });
+
+  it('cancels a BUY MARKET remainder when protection is reached', async () => {
+    await service.submit(sell('IND-A', 'PROTECTED-ASK-75', 75_000, 30_000));
+    await service.submit(sell('IND-B', 'PROTECTED-ASK-76', 76_000, 20_000));
+    await service.submit(sell('IND-C', 'PROTECTED-ASK-78', 78_000, 10_000));
+
+    const buy = await service.submit(
+      market('IND-D', 'PROTECTED-BUY-MARKET', 'BUY', 60_000, 76_000),
+    );
+    const position = await positionService.getPosition('IND-D', 'PTBAE-IND', 2027);
+
+    expect(buy).toMatchObject({ status: 'CANCELLED_REMAINDER', remainingQuantity: 10_000 });
+    expect((await service.listTrades('PTBAE-IND', 2027)).map((trade) => trade.price)).toEqual([
+      75_000,
+      76_000,
+    ]);
+    expect((await service.getOrderBook('PTBAE-IND', 2027)).asks).toEqual([
+      { price: 78_000, quantity: 10_000, orderCount: 1 },
+    ]);
+    expect(position).toMatchObject({
+      reservedBuyFunds: 0,
+      reservedBuyQuantity: 0,
+      executedBuyPending: 50_000,
+      executedBuyPendingFunds: 3_770_000_000,
+      availableBuyNeed: 10_000,
+    });
+  });
+
+  it('cancels an empty-book MARKET order without retaining a reservation', async () => {
+    const order = await service.submit(
+      market('IND-D', 'EMPTY-MARKET', 'BUY', 10_000, 76_000),
+    );
+    const retry = await service.submit(
+      market('IND-D', 'EMPTY-MARKET', 'BUY', 10_000, 76_000),
+    );
+    const position = await positionService.getPosition('IND-D', 'PTBAE-IND', 2027);
+
+    expect(order).toMatchObject({ status: 'CANCELLED_REMAINDER', remainingQuantity: 10_000 });
+    expect(retry.orderId).toBe(order.orderId);
+    expect(position).toMatchObject({ reservedBuyFunds: 0, reservedBuyQuantity: 0 });
+  });
+
+  it('executes a protected SELL MARKET against the highest resting bid', async () => {
+    await service.submit({ ...sell('IND-D', 'MARKET-BID-76', 76_000, 20_000), side: 'BUY' });
+
+    const sellMarket = await service.submit(
+      market('IND-A', 'MARKET-SELL-FULL', 'SELL', 20_000, 75_000),
+    );
+    const trades = await service.listTrades('PTBAE-IND', 2027);
+
+    expect(sellMarket.status).toBe('FILLED');
+    expect(trades).toEqual([
+      expect.objectContaining({ quantity: 20_000, price: 76_000 }),
+    ]);
+  });
+
+  it('rejects invalid MARKET and LIMIT field combinations', async () => {
+    await expect(
+      service.submit({
+        ...market('IND-D', 'MARKET-WITH-LIMIT', 'BUY', 10_000, 76_000),
+        limitPrice: 75_000,
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'ORD-INVALID-MARKET-FIELDS' }),
+    });
+    await expect(
+      service.submit({ ...sell('IND-A', 'LIMIT-WITH-IOC', 75_000), timeInForce: 'IOC' }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'ORD-INVALID-LIMIT-FIELDS' }),
+    });
   });
 });

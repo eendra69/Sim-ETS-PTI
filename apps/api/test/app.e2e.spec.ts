@@ -155,4 +155,51 @@ describe('Position and balance API', () => {
       .expect(200);
     expect(resting.body.status).toBe('FILLED');
   });
+
+  it('applies IOC semantics to a protected MARKET order on an empty book', async () => {
+    const command = {
+      participantId: 'IND-D',
+      clientOrderId: 'E2E-EMPTY-MARKET',
+      seriesCode: 'PTBAE-IND',
+      compliancePeriod: 2027,
+      side: 'BUY',
+      orderType: 'MARKET',
+      quantity: 1_000,
+      protectionPrice: 76_000,
+      timeInForce: 'IOC',
+    };
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send(command)
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      status: 'CANCELLED_REMAINDER',
+      remainingQuantity: 1_000,
+    });
+    expect(response.body.limitPrice).toBeUndefined();
+
+    const retry = await request(app.getHttpServer()).post('/api/v1/orders').send(command).expect(201);
+    expect(retry.body.orderId).toBe(response.body.orderId);
+  });
+
+  it('rejects a MARKET order containing a user limit price', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send({
+        participantId: 'IND-D',
+        clientOrderId: 'E2E-INVALID-MARKET',
+        seriesCode: 'PTBAE-IND',
+        compliancePeriod: 2027,
+        side: 'BUY',
+        orderType: 'MARKET',
+        quantity: 1_000,
+        limitPrice: 75_000,
+        protectionPrice: 76_000,
+        timeInForce: 'IOC',
+      })
+      .expect(400);
+
+    expect(response.body.code).toBe('ORD-INVALID-MARKET-FIELDS');
+  });
 });
