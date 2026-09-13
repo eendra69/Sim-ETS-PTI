@@ -14,6 +14,7 @@
     "db:up": "docker compose up -d postgres",
     "db:migrate": "powershell -NoProfile -ExecutionPolicy Bypass -File database/migrate.ps1",
     "db:seed:synthetic": "powershell -NoProfile -ExecutionPolicy Bypass -File database/seed-synthetic.ps1",
+    "db:bootstrap": "node apps/api/scripts/database-bootstrap.mjs",
     "uat:synthetic": "node uat/synthetic-market-uat.mjs",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres"

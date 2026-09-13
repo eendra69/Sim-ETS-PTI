@@ -49,6 +49,12 @@ Endpoint operasi:
 - `GET /api/v1/metrics`: metrik Prometheus dasar;
 - semua respons memiliki `x-correlation-id`, security headers, dan log request JSON.
 
+## Publikasi demo Render
+
+`render.yaml` mendefinisikan satu static web, satu Node API, dan satu PostgreSQL. Saat API mulai, `apps/api/scripts/database-bootstrap.mjs` memperoleh advisory lock, menjalankan migration yang belum tercatat, lalu menjalankan seluruh seed idempotent. Secret `API_KEYS_JSON` sengaja berstatus `sync: false` sehingga wajib dimasukkan melalui dashboard dan tidak pernah disimpan di Git.
+
+Blueprint saat ini menunjuk branch `feature/uat-production-readiness`. Setelah branch digabung ke `main`, ubah atau hapus properti `branch` agar deployment mengikuti branch utama. Paket gratis Render hanya sesuai untuk demo: web service dapat sleep dan database gratis kedaluwarsa 30 hari tanpa backup terkelola.
+
 ## Backup dan restore drill
 
 ```powershell

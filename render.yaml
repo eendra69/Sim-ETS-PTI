@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: sim-ets-pti-api-eendra69
+    runtime: node
+    plan: free
+    branch: feature/uat-production-readiness
+    autoDeployTrigger: checksPass
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @sim-ets/api build
+    startCommand: node apps/api/scripts/database-bootstrap.mjs && pnpm --filter @sim-ets/api start
+    healthCheckPath: /api/v1/health/ready
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PERSISTENCE_MODE
+        value: postgres
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sim-ets-pti-db-eendra69
+          property: connectionString
+      - key: AUTH_MODE
+        value: api-key
+      - key: API_KEYS_JSON
+        sync: false
+      - key: RATE_LIMIT_PER_MINUTE
+        value: 120
+      - key: WEB_ORIGIN
+        value: https://sim-ets-pti-web-eendra69.onrender.com
+
+  - type: web
+    name: sim-ets-pti-web-eendra69
+    runtime: static
+    branch: feature/uat-production-readiness
+    autoDeployTrigger: checksPass
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @sim-ets/web build
+    staticPublishPath: apps/web/dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://sim-ets-pti-api-eendra69.onrender.com/api/v1
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+databases:
+  - name: sim-ets-pti-db-eendra69
+    plan: free
+    databaseName: sim_ets
+    user: sim_ets
+    ipAllowList: []

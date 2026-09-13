@@ -16,7 +16,7 @@ async function bootstrap(): Promise<void> {
       transform: true,
     }),
   );
-  await app.listen(Number(process.env.API_PORT ?? 3000));
+  await app.listen(Number(process.env.PORT ?? process.env.API_PORT ?? 3000));
 }
 
 void bootstrap();
