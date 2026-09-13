@@ -60,6 +60,7 @@ Copy-Item .env.example .env
 pnpm install
 docker compose up -d postgres
 pnpm db:migrate
+pnpm db:seed:synthetic
 pnpm dev
 ```
 
@@ -73,10 +74,28 @@ API tersedia di `http://localhost:3000/api/v1` dan web di `http://localhost:5173
 pnpm build
 pnpm test
 pnpm typecheck
+pnpm data:generate:synthetic
+pnpm data:validate:synthetic
 pnpm db:up
 pnpm db:migrate
+pnpm db:seed:synthetic
 pnpm db:down
 ```
+
+## Dataset sintetis 2024–2026
+
+Dataset UAT deterministik tersedia di `data/synthetic`. Isinya mencakup 42 peserta anonim dari tujuh arketipe usaha dan 126 posisi tahunan. Data 2024–2025 berstatus `VERIFIED` sintetis, sedangkan 2026 berstatus `PROVISIONAL`. Seluruh record memiliki provenance `SYNTHETIC`, source reference unik, dan hash dataset.
+
+Generator menghasilkan master peserta, input kepatuhan, expected result, negative test cases, ringkasan kontrol, serta SQL seed. Menjalankan seed berulang kali tidak menggandakan record, menaikkan version tanpa perubahan, atau menimpa saldo transaksi yang sudah aktif.
+
+```bash
+pnpm data:generate:synthetic
+pnpm data:validate:synthetic
+pnpm db:migrate
+pnpm db:seed:synthetic
+```
+
+Dataset ini hanya untuk pengembangan dan UAT. Angkanya bukan kuota, emisi, atau saldo registry resmi.
 
 ## Endpoint Tahap 1
 

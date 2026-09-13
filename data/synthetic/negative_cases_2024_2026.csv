@@ -1,0 +1,7 @@
+case_id,validation_target,participant_id,compliance_period,field,invalid_value,expected_error
+NEG-001,DUPLICATE_KEY,SYN-COAL-S-A,2024,participant_id+compliance_period,duplicate,Duplicate participant/series/period must be rejected
+NEG-002,NON_NEGATIVE_QUOTA,SYN-GAS-M-A,2025,allocated_quota,-1000,allocated_quota must be non-negative
+NEG-003,KNOWN_PARTICIPANT,SYN-UNKNOWN-01,2025,participant_id,SYN-UNKNOWN-01,Participant must exist
+NEG-004,SOURCE_STATUS,SYN-CEM-L-B,2026,source_status,FINAL,source_status must be VERIFIED or PROVISIONAL
+NEG-005,BANKING_LIMIT,SYN-PLP-S-A,2025,eligible_banked_units,999999999,Banked units cannot exceed eligible prior-period surplus
+NEG-006,SOURCE_REFERENCE,SYN-MFG-M-B,2024,source_reference,,Synthetic source reference is required

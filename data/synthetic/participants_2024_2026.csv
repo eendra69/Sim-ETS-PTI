@@ -1,0 +1,43 @@
+participant_id,legal_name,business_type,scale_class,operating_profile,data_origin,status
+SYN-COAL-S-A,Sintetis Pembangkit Batu Bara SMALL A,PEMBANGKIT_BATU_BARA,SMALL,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-COAL-S-B,Sintetis Pembangkit Batu Bara SMALL B,PEMBANGKIT_BATU_BARA,SMALL,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-COAL-M-A,Sintetis Pembangkit Batu Bara MEDIUM A,PEMBANGKIT_BATU_BARA,MEDIUM,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-COAL-M-B,Sintetis Pembangkit Batu Bara MEDIUM B,PEMBANGKIT_BATU_BARA,MEDIUM,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-COAL-L-A,Sintetis Pembangkit Batu Bara LARGE A,PEMBANGKIT_BATU_BARA,LARGE,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-COAL-L-B,Sintetis Pembangkit Batu Bara LARGE B,PEMBANGKIT_BATU_BARA,LARGE,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-GAS-S-A,Sintetis Pembangkit Gas SMALL A,PEMBANGKIT_GAS,SMALL,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-GAS-S-B,Sintetis Pembangkit Gas SMALL B,PEMBANGKIT_GAS,SMALL,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-GAS-M-A,Sintetis Pembangkit Gas MEDIUM A,PEMBANGKIT_GAS,MEDIUM,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-GAS-M-B,Sintetis Pembangkit Gas MEDIUM B,PEMBANGKIT_GAS,MEDIUM,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-GAS-L-A,Sintetis Pembangkit Gas LARGE A,PEMBANGKIT_GAS,LARGE,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-GAS-L-B,Sintetis Pembangkit Gas LARGE B,PEMBANGKIT_GAS,LARGE,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-CEM-S-A,Sintetis Industri Semen SMALL A,SEMEN,SMALL,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-CEM-S-B,Sintetis Industri Semen SMALL B,SEMEN,SMALL,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-CEM-M-A,Sintetis Industri Semen MEDIUM A,SEMEN,MEDIUM,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-CEM-M-B,Sintetis Industri Semen MEDIUM B,SEMEN,MEDIUM,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-CEM-L-A,Sintetis Industri Semen LARGE A,SEMEN,LARGE,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-CEM-L-B,Sintetis Industri Semen LARGE B,SEMEN,LARGE,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-STL-S-A,Sintetis Industri Besi dan Baja SMALL A,BESI_BAJA,SMALL,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-STL-S-B,Sintetis Industri Besi dan Baja SMALL B,BESI_BAJA,SMALL,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-STL-M-A,Sintetis Industri Besi dan Baja MEDIUM A,BESI_BAJA,MEDIUM,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-STL-M-B,Sintetis Industri Besi dan Baja MEDIUM B,BESI_BAJA,MEDIUM,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-STL-L-A,Sintetis Industri Besi dan Baja LARGE A,BESI_BAJA,LARGE,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-STL-L-B,Sintetis Industri Besi dan Baja LARGE B,BESI_BAJA,LARGE,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-FRT-S-A,Sintetis Industri Pupuk dan Petrokimia SMALL A,PUPUK_PETROKIMIA,SMALL,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-FRT-S-B,Sintetis Industri Pupuk dan Petrokimia SMALL B,PUPUK_PETROKIMIA,SMALL,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-FRT-M-A,Sintetis Industri Pupuk dan Petrokimia MEDIUM A,PUPUK_PETROKIMIA,MEDIUM,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-FRT-M-B,Sintetis Industri Pupuk dan Petrokimia MEDIUM B,PUPUK_PETROKIMIA,MEDIUM,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-FRT-L-A,Sintetis Industri Pupuk dan Petrokimia LARGE A,PUPUK_PETROKIMIA,LARGE,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-FRT-L-B,Sintetis Industri Pupuk dan Petrokimia LARGE B,PUPUK_PETROKIMIA,LARGE,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-PLP-S-A,Sintetis Industri Pulp dan Kertas SMALL A,PULP_KERTAS,SMALL,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-PLP-S-B,Sintetis Industri Pulp dan Kertas SMALL B,PULP_KERTAS,SMALL,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-PLP-M-A,Sintetis Industri Pulp dan Kertas MEDIUM A,PULP_KERTAS,MEDIUM,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-PLP-M-B,Sintetis Industri Pulp dan Kertas MEDIUM B,PULP_KERTAS,MEDIUM,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-PLP-L-A,Sintetis Industri Pulp dan Kertas LARGE A,PULP_KERTAS,LARGE,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-PLP-L-B,Sintetis Industri Pulp dan Kertas LARGE B,PULP_KERTAS,LARGE,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-MFG-S-A,Sintetis Manufaktur Efisien SMALL A,MANUFAKTUR_EFISIEN,SMALL,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-MFG-S-B,Sintetis Manufaktur Efisien SMALL B,MANUFAKTUR_EFISIEN,SMALL,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-MFG-M-A,Sintetis Manufaktur Efisien MEDIUM A,MANUFAKTUR_EFISIEN,MEDIUM,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-MFG-M-B,Sintetis Manufaktur Efisien MEDIUM B,MANUFAKTUR_EFISIEN,MEDIUM,Beban Tinggi,SYNTHETIC,ACTIVE
+SYN-MFG-L-A,Sintetis Manufaktur Efisien LARGE A,MANUFAKTUR_EFISIEN,LARGE,Efisiensi Tinggi,SYNTHETIC,ACTIVE
+SYN-MFG-L-B,Sintetis Manufaktur Efisien LARGE B,MANUFAKTUR_EFISIEN,LARGE,Beban Tinggi,SYNTHETIC,ACTIVE

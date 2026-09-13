@@ -9,8 +9,11 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
+    "data:generate:synthetic": "node data/synthetic/generate-dataset.mjs",
+    "data:validate:synthetic": "node data/synthetic/validate-dataset.mjs",
     "db:up": "docker compose up -d postgres",
     "db:migrate": "powershell -NoProfile -ExecutionPolicy Bypass -File database/migrate.ps1",
+    "db:seed:synthetic": "powershell -NoProfile -ExecutionPolicy Bypass -File database/seed-synthetic.ps1",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres"
   },

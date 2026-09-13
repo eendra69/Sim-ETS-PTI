@@ -1,0 +1,44 @@
+{
+  "datasetCode": "SYNTHETIC-PTBAE-IND-2024-2026-V1",
+  "datasetHash": "022b7b2f77efd1385cc5e8734b5092246d5ee0111abe9d659db5813ad75d0370",
+  "participantCount": 42,
+  "positionRowCount": 126,
+  "summary": [
+    {
+      "year": 2024,
+      "participants": 42,
+      "allocatedQuota": 37780000,
+      "verifiedEmission": 37813000,
+      "bankedUnits": 0,
+      "offsets": 106000,
+      "netPosition": 73000,
+      "surplusParticipants": 27,
+      "deficitParticipants": 15,
+      "balancedParticipants": 0
+    },
+    {
+      "year": 2025,
+      "participants": 42,
+      "allocatedQuota": 37493000,
+      "verifiedEmission": 38091000,
+      "bankedUnits": 472000,
+      "offsets": 116000,
+      "netPosition": -10000,
+      "surplusParticipants": 24,
+      "deficitParticipants": 15,
+      "balancedParticipants": 3
+    },
+    {
+      "year": 2026,
+      "participants": 42,
+      "allocatedQuota": 37332000,
+      "verifiedEmission": 38507000,
+      "bankedUnits": 487000,
+      "offsets": 153000,
+      "netPosition": -535000,
+      "surplusParticipants": 22,
+      "deficitParticipants": 20,
+      "balancedParticipants": 0
+    }
+  ]
+}

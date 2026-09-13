@@ -21,6 +21,8 @@ services:
       - ./database/seeds/001_demo_participants.sql:/docker-entrypoint-initdb.d/20-demo-participants.sql:ro
       - ./database/migrations/008_ruleset_admin_audit.sql:/docker-entrypoint-initdb.d/21-ruleset-admin-audit.sql:ro
       - ./database/seeds/002_governance.sql:/docker-entrypoint-initdb.d/22-governance.sql:ro
+      - ./database/migrations/009_compliance_data_provenance.sql:/docker-entrypoint-initdb.d/23-compliance-data-provenance.sql:ro
+      - ./database/seeds/003_synthetic_compliance_2024_2026.sql:/docker-entrypoint-initdb.d/24-synthetic-compliance.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sim_ets} -d ${POSTGRES_DB:-sim_ets}"]
       interval: 5s
