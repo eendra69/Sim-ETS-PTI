@@ -22,7 +22,7 @@ describe('PositionBalanceService', () => {
 
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
-    expect(service.getPosition('IND-A', 'PTBAE-IND', 2027).reservedSell).toBe(20_000);
+    expect((await service.getPosition('IND-A', 'PTBAE-IND', 2027)).reservedSell).toBe(20_000);
   });
 
   it('releases a reservation idempotently', async () => {
@@ -37,7 +37,7 @@ describe('PositionBalanceService', () => {
     await service.releaseReservation(reservation.reservationId);
     await service.releaseReservation(reservation.reservationId);
 
-    expect(service.getPosition('IND-A', 'PTBAE-IND', 2027).reservedSell).toBe(0);
+    expect((await service.getPosition('IND-A', 'PTBAE-IND', 2027)).reservedSell).toBe(0);
   });
 
   it('rejects buying beyond the verified need', async () => {
@@ -70,7 +70,7 @@ describe('PositionBalanceService', () => {
 
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
-    expect(service.getPosition('IND-D', 'PTBAE-IND', 2027).availableBuyNeed).toBe(20_000);
+    expect((await service.getPosition('IND-D', 'PTBAE-IND', 2027)).availableBuyNeed).toBe(20_000);
   });
 
   it('returns the original reservation for an idempotent retry', async () => {
@@ -86,6 +86,6 @@ describe('PositionBalanceService', () => {
     const retry = await service.reserveSell(command);
 
     expect(retry.reservationId).toBe(first.reservationId);
-    expect(service.getPosition('IND-A', 'PTBAE-IND', 2027).reservedSell).toBe(10_000);
+    expect((await service.getPosition('IND-A', 'PTBAE-IND', 2027)).reservedSell).toBe(10_000);
   });
 });

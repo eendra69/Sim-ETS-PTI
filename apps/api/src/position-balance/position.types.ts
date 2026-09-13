@@ -51,7 +51,7 @@ export interface PositionSnapshot extends AnnualPositionInput {
 }
 
 export type ReservationKind = 'SELL_QUOTA' | 'BUY_FUNDS';
-export type ReservationStatus = 'ACTIVE' | 'RELEASED';
+export type ReservationStatus = 'ACTIVE' | 'RELEASED' | 'CONSUMED';
 
 export interface BalanceReservation {
   reservationId: string;

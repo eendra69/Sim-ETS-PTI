@@ -9,7 +9,7 @@ export class PositionBalanceController {
   constructor(private readonly positionBalanceService: PositionBalanceService) {}
 
   @Get('positions')
-  listPositions(@Query() query: QueryPositionDto): PositionSnapshot[] {
+  listPositions(@Query() query: QueryPositionDto): Promise<PositionSnapshot[]> {
     return this.positionBalanceService.listPositions(query.seriesCode, query.compliancePeriod);
   }
 
@@ -17,7 +17,7 @@ export class PositionBalanceController {
   getPosition(
     @Param('participantId') participantId: string,
     @Query() query: QueryPositionDto,
-  ): PositionSnapshot {
+  ): Promise<PositionSnapshot> {
     return this.positionBalanceService.getPosition(
       participantId,
       query.seriesCode,

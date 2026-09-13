@@ -12,6 +12,7 @@ services:
     volumes:
       - sim_ets_postgres_data:/var/lib/postgresql/data
       - ./database/migrations/001_position_balance.sql:/docker-entrypoint-initdb.d/10-position-balance.sql:ro
+      - ./database/migrations/002_limit_orders.sql:/docker-entrypoint-initdb.d/15-limit-orders.sql:ro
       - ./database/seeds/001_demo_participants.sql:/docker-entrypoint-initdb.d/20-demo-participants.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sim_ets} -d ${POSTGRES_DB:-sim_ets}"]

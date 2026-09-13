@@ -1,0 +1,47 @@
+import { BadRequestException } from '@nestjs/common';
+import { MarketRuleset } from './limit-order.types';
+
+export const BASELINE_MARKET_RULESET: MarketRuleset = {
+  rulesetId: 'PTBAE-IND-2027-PROTOTYPE-V1',
+  seriesCode: 'PTBAE-IND',
+  compliancePeriod: 2027,
+  referencePrice: 75_000,
+  minimumPrice: 60_000,
+  maximumPrice: 90_000,
+  tickSize: 200,
+  lotSize: 1,
+  currency: 'IDR',
+};
+
+export function validateAgainstRuleset(
+  seriesCode: string,
+  compliancePeriod: number,
+  quantity: number,
+  limitPrice: number,
+): void {
+  const rules = BASELINE_MARKET_RULESET;
+  if (seriesCode !== rules.seriesCode || compliancePeriod !== rules.compliancePeriod) {
+    throw new BadRequestException({
+      code: 'ORD-UNSUPPORTED-MARKET',
+      message: 'No active prototype ruleset exists for the requested series and period',
+    });
+  }
+  if (quantity % rules.lotSize !== 0) {
+    throw new BadRequestException({
+      code: 'ORD-INVALID-LOT',
+      message: `Quantity must be a multiple of ${rules.lotSize}`,
+    });
+  }
+  if (limitPrice < rules.minimumPrice || limitPrice > rules.maximumPrice) {
+    throw new BadRequestException({
+      code: 'ORD-PRICE-OUTSIDE-BAND',
+      message: `Limit price must be between ${rules.minimumPrice} and ${rules.maximumPrice}`,
+    });
+  }
+  if (limitPrice % rules.tickSize !== 0) {
+    throw new BadRequestException({
+      code: 'ORD-INVALID-TICK',
+      message: `Limit price must be a multiple of ${rules.tickSize}`,
+    });
+  }
+}
