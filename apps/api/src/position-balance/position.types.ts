@@ -27,6 +27,7 @@ export interface BalanceAccount {
   reservedBuyFunds: number;
   reservedBuyQuantity: number;
   executedBuyPending: number;
+  executedBuyPendingFunds: number;
   version: number;
 }
 
@@ -46,6 +47,7 @@ export interface PositionSnapshot extends AnnualPositionInput {
   availableBuyingCapacity: number;
   reservedBuyQuantity: number;
   executedBuyPending: number;
+  executedBuyPendingFunds: number;
   availableBuyNeed: number;
   unit: 'tCO2e';
 }
@@ -62,7 +64,10 @@ export interface BalanceReservation {
   kind: ReservationKind;
   quantity: number;
   amount: number;
+  remainingQuantity: number;
+  remainingAmount: number;
   status: ReservationStatus;
   createdAt: string;
   releasedAt?: string;
+  consumedAt?: string;
 }

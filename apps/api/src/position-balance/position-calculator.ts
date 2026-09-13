@@ -57,9 +57,13 @@ export function calculatePosition(
     executedSellPending: balance.executedSellPending,
     buyingCapacity: balance.buyingCapacity,
     reservedBuyFunds: balance.reservedBuyFunds,
-    availableBuyingCapacity: Math.max(0, balance.buyingCapacity - balance.reservedBuyFunds),
+    availableBuyingCapacity: Math.max(
+      0,
+      balance.buyingCapacity - balance.reservedBuyFunds - balance.executedBuyPendingFunds,
+    ),
     reservedBuyQuantity: balance.reservedBuyQuantity,
     executedBuyPending: balance.executedBuyPending,
+    executedBuyPendingFunds: balance.executedBuyPendingFunds,
     availableBuyNeed: Math.max(0, buyNeedRemaining - committedBuy),
     unit: 'tCO2e',
   };

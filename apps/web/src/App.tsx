@@ -19,6 +19,18 @@ interface LimitOrder {
   remainingQuantity: number;
   limitPrice: number;
   timeInForce: 'DAY' | 'GTC';
+  status: 'OPEN' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'EXPIRED';
+}
+
+interface Trade {
+  tradeId: string;
+  buyerParticipantId: string;
+  sellerParticipantId: string;
+  quantity: number;
+  price: number;
+  notional: number;
+  tradeSequence: number;
+  executedAt: string;
 }
 
 interface BookLevel {
@@ -51,6 +63,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export function App() {
   const [positions, setPositions] = useState<PositionSnapshot[]>([]);
   const [book, setBook] = useState<OrderBook>({ bids: [], asks: [], orders: { bids: [], asks: [] } });
+  const [trades, setTrades] = useState<Trade[]>([]);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -62,12 +75,14 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextPositions, nextBook] = await Promise.all([
+      const [nextPositions, nextBook, nextTrades] = await Promise.all([
         api<PositionSnapshot[]>('/positions?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
+        api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
       ]);
       setPositions(nextPositions);
       setBook(nextBook);
+      setTrades(nextTrades);
       setError(undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tidak dapat memuat data');
@@ -92,7 +107,7 @@ export function App() {
     setNotice(undefined);
     setError(undefined);
     try {
-      await api<LimitOrder>('/orders', {
+      const order = await api<LimitOrder>('/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -107,7 +122,11 @@ export function App() {
           timeInForce,
         }),
       });
-      setNotice(`${side} LIMIT berhasil masuk antrean.`);
+      setNotice(
+        order.remainingQuantity === 0
+          ? `${side} LIMIT terisi penuh.`
+          : `${side} LIMIT diterima dengan status ${order.status}.`,
+      );
       await refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Order ditolak');
@@ -140,15 +159,15 @@ export function App() {
         <div>
           <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
           <h1>PTBAE-IND</h1>
-          <p className="subtitle">LIMIT Order & Order Book · Compliance Period 2027</p>
+          <p className="subtitle">Matching Engine · Compliance Period 2027</p>
         </div>
-        <span className="status">Tahap 2</span>
+        <span className="status">Tahap 3</span>
       </header>
 
       <section className="summary" aria-label="Ringkasan pasar">
         <article><span>Available supply</span><strong>{number.format(totals.supply)}</strong><small>tCO₂e setelah reservation</small></article>
         <article><span>Available buy need</span><strong>{number.format(totals.demand)}</strong><small>tCO₂e kebutuhan tersisa</small></article>
-        <article><span>Prototype ruleset</span><strong>Rp200</strong><small>Tick · band Rp60.000–90.000</small></article>
+        <article><span>Executed trades</span><strong>{number.format(trades.length)}</strong><small>{trades.length ? `LTP ${money.format(trades.at(-1)!.price)}` : 'Belum ada transaksi'}</small></article>
       </section>
 
       {error ? <p className="error">{error}</p> : null}
@@ -180,8 +199,13 @@ export function App() {
       </section>
 
       <section className="panel orders-panel">
-        <div className="panel-heading compact"><div><p className="eyebrow">PRICE–TIME QUEUE</p><h2>Open orders</h2></div><p>Matching belum diaktifkan pada tahap ini.</p></div>
+        <div className="panel-heading compact"><div><p className="eyebrow">PRICE–TIME QUEUE</p><h2>Open orders</h2></div><p>Hanya sisa order yang belum terisi yang tampil di antrean.</p></div>
         <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Side</th><th>Price</th><th>Remaining</th><th>TIF</th><th></th></tr></thead><tbody>{openOrders.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada order aktif</td></tr> : openOrders.map((order) => <tr key={order.orderId}><td>{order.participantId}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.limitPrice)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
+      </section>
+
+      <section className="panel orders-panel">
+        <div className="panel-heading compact"><div><p className="eyebrow">IMMUTABLE LEDGER</p><h2>Executed trades</h2></div><p>Harga eksekusi mengikuti harga resting order.</p></div>
+        <div className="table-wrap"><table><thead><tr><th>Sequence</th><th>Buyer</th><th>Seller</th><th>Price</th><th>Quantity</th><th>Notional</th></tr></thead><tbody>{trades.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada trade</td></tr> : [...trades].reverse().map((trade) => <tr key={trade.tradeId}><td>#{trade.tradeSequence}</td><td>{trade.buyerParticipantId}</td><td>{trade.sellerParticipantId}</td><td>{money.format(trade.price)}</td><td>{number.format(trade.quantity)}</td><td>{money.format(trade.notional)}</td></tr>)}</tbody></table></div>
       </section>
 
       <section className="panel positions-panel">

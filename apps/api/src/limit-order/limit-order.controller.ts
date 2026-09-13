@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/commo
 import { CreateLimitOrderDto } from './dto/create-limit-order.dto';
 import { QueryOrderBookDto } from './dto/query-order-book.dto';
 import { LimitOrderService } from './limit-order.service';
-import { LimitOrder, MarketRuleset, OrderBookSnapshot } from './limit-order.types';
+import { LimitOrder, MarketRuleset, OrderBookSnapshot, Trade } from './limit-order.types';
 
 @Controller()
 export class LimitOrderController {
@@ -41,5 +41,15 @@ export class LimitOrderController {
   @Get('order-book')
   getOrderBook(@Query() query: QueryOrderBookDto): Promise<OrderBookSnapshot> {
     return this.limitOrderService.getOrderBook(query.seriesCode, query.compliancePeriod);
+  }
+
+  @Get('trades')
+  listTrades(@Query() query: QueryOrderBookDto): Promise<Trade[]> {
+    return this.limitOrderService.listTrades(query.seriesCode, query.compliancePeriod);
+  }
+
+  @Get('trades/:tradeId')
+  getTrade(@Param('tradeId') tradeId: string): Promise<Trade> {
+    return this.limitOrderService.getTrade(tradeId);
   }
 }

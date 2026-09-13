@@ -106,4 +106,53 @@ describe('Position and balance API', () => {
       })
       .expect(400);
   });
+
+  it('matches crossing LIMIT orders and exposes the resulting trade', async () => {
+    const baseOrder = {
+      seriesCode: 'PTBAE-IND',
+      compliancePeriod: 2027,
+      orderType: 'LIMIT',
+      quantity: 1_000,
+      limitPrice: 70_000,
+      timeInForce: 'DAY',
+    };
+    const sell = await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send({
+        ...baseOrder,
+        participantId: 'IND-A',
+        clientOrderId: 'E2E-MATCH-SELL',
+        side: 'SELL',
+      })
+      .expect(201);
+    expect(sell.body.status).toBe('OPEN');
+
+    const buy = await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send({
+        ...baseOrder,
+        participantId: 'IND-D',
+        clientOrderId: 'E2E-MATCH-BUY',
+        side: 'BUY',
+      })
+      .expect(201);
+    expect(buy.body).toMatchObject({ status: 'FILLED', remainingQuantity: 0 });
+
+    const trades = await request(app.getHttpServer())
+      .get('/api/v1/trades?seriesCode=PTBAE-IND&compliancePeriod=2027')
+      .expect(200);
+    expect(trades.body).toEqual([
+      expect.objectContaining({
+        buyerParticipantId: 'IND-D',
+        sellerParticipantId: 'IND-A',
+        quantity: 1_000,
+        price: 70_000,
+      }),
+    ]);
+
+    const resting = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${sell.body.orderId}`)
+      .expect(200);
+    expect(resting.body.status).toBe('FILLED');
+  });
 });

@@ -122,4 +122,95 @@ describe('LimitOrderService', () => {
 
     expect((await positionService.getPosition('IND-A', 'PTBAE-IND', 2027)).reservedSell).toBe(0);
   });
+
+  it('executes the golden multi-seller scenario at resting prices', async () => {
+    const ask75 = await service.submit(sell('IND-A', 'GOLDEN-ASK-75', 75_000, 30_000));
+    const ask76 = await service.submit(sell('IND-B', 'GOLDEN-ASK-76', 76_000, 30_000));
+    const ask78 = await service.submit(sell('IND-C', 'GOLDEN-ASK-78', 78_000, 30_000));
+
+    const buy = await service.submit({
+      ...sell('IND-D', 'GOLDEN-BUY-76', 76_000, 60_000),
+      side: 'BUY',
+    });
+
+    const trades = await service.listTrades('PTBAE-IND', 2027);
+    const book = await service.getOrderBook('PTBAE-IND', 2027);
+    const buyerPosition = await positionService.getPosition('IND-D', 'PTBAE-IND', 2027);
+
+    expect(trades.map(({ quantity, price }) => ({ quantity, price }))).toEqual([
+      { quantity: 30_000, price: 75_000 },
+      { quantity: 30_000, price: 76_000 },
+    ]);
+    expect(await service.getOrder(ask75.orderId)).toMatchObject({
+      status: 'FILLED',
+      remainingQuantity: 0,
+    });
+    expect(await service.getOrder(ask76.orderId)).toMatchObject({
+      status: 'FILLED',
+      remainingQuantity: 0,
+    });
+    expect(await service.getOrder(ask78.orderId)).toMatchObject({
+      status: 'OPEN',
+      remainingQuantity: 30_000,
+    });
+    expect(buy).toMatchObject({ status: 'FILLED', remainingQuantity: 0 });
+    expect(book.asks).toEqual([{ price: 78_000, quantity: 30_000, orderCount: 1 }]);
+    expect(buyerPosition).toMatchObject({
+      reservedBuyFunds: 0,
+      reservedBuyQuantity: 0,
+      executedBuyPending: 60_000,
+      executedBuyPendingFunds: 4_530_000_000,
+      availableBuyNeed: 0,
+    });
+  });
+
+  it('keeps a partially filled resting order in the visible book', async () => {
+    const ask = await service.submit(sell('IND-A', 'PARTIAL-ASK', 75_000, 10_000));
+    await service.submit({ ...sell('IND-D', 'PARTIAL-BUY', 75_000, 4_000), side: 'BUY' });
+
+    expect(await service.getOrder(ask.orderId)).toMatchObject({
+      status: 'PARTIALLY_FILLED',
+      remainingQuantity: 6_000,
+    });
+    expect((await service.getOrderBook('PTBAE-IND', 2027)).asks).toEqual([
+      { price: 75_000, quantity: 6_000, orderCount: 1 },
+    ]);
+  });
+
+  it('releases only the unfilled reservation when a partial order is cancelled', async () => {
+    const ask = await service.submit(sell('IND-A', 'PARTIAL-CANCEL-ASK', 75_000, 10_000));
+    await service.submit({
+      ...sell('IND-D', 'PARTIAL-CANCEL-BUY', 75_000, 4_000),
+      side: 'BUY',
+    });
+
+    await service.cancel(ask.orderId);
+    const sellerPosition = await positionService.getPosition('IND-A', 'PTBAE-IND', 2027);
+
+    expect(sellerPosition).toMatchObject({
+      reservedSell: 0,
+      executedSellPending: 4_000,
+      availableToSell: 26_000,
+    });
+  });
+
+  it('does not match incompatible limit prices', async () => {
+    await service.submit(sell('IND-A', 'NO-MATCH-ASK', 75_000, 5_000));
+    await service.submit({ ...sell('IND-D', 'NO-MATCH-BID', 74_000, 5_000), side: 'BUY' });
+
+    expect(await service.listTrades('PTBAE-IND', 2027)).toHaveLength(0);
+  });
+
+  it('keeps an incoming remainder after available liquidity is exhausted', async () => {
+    await service.submit(sell('IND-A', 'INCOMING-PARTIAL-ASK', 75_000, 4_000));
+    const buy = await service.submit({
+      ...sell('IND-D', 'INCOMING-PARTIAL-BUY', 75_000, 10_000),
+      side: 'BUY',
+    });
+
+    expect(buy).toMatchObject({ status: 'PARTIALLY_FILLED', remainingQuantity: 6_000 });
+    expect((await service.getOrderBook('PTBAE-IND', 2027)).bids).toEqual([
+      { price: 75_000, quantity: 6_000, orderCount: 1 },
+    ]);
+  });
 });

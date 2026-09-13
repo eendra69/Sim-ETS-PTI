@@ -37,6 +37,7 @@ interface PositionBalanceRow extends QueryResultRow {
   reserved_buy_funds: string;
   reserved_buy_quantity: string;
   executed_buy_pending: string;
+  executed_buy_pending_funds: string;
   version: number;
 }
 
@@ -49,9 +50,12 @@ interface ReservationRow extends QueryResultRow {
   kind: BalanceReservation['kind'];
   quantity: string;
   amount: string;
+  remaining_quantity: string;
+  remaining_amount: string;
   status: BalanceReservation['status'];
   created_at: Date;
   released_at: Date | null;
+  consumed_at: Date | null;
 }
 
 @Injectable()
@@ -229,57 +233,78 @@ export class PositionBalanceService implements OnModuleDestroy {
     });
   }
 
-  async releaseReservation(reservationId: string): Promise<BalanceReservation> {
+  async consumeReservation(
+    reservationId: string,
+    quantity: number,
+    reservedAmount: number,
+    executedAmount: number,
+    transaction?: PoolClient,
+  ): Promise<BalanceReservation> {
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+      throw new BadRequestException('Consumed quantity must be a positive safe integer');
+    }
+    for (const [field, value] of [
+      ['reservedAmount', reservedAmount],
+      ['executedAmount', executedAmount],
+    ] as const) {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new BadRequestException(`${field} must be a non-negative safe integer`);
+      }
+    }
+
     if (this.pool) {
-      return this.withTransaction(async (client) => {
-        const reservationResult = await client.query<ReservationRow>(
-          'SELECT * FROM balance_reservations WHERE reservation_id = $1 FOR UPDATE',
-          [reservationId],
+      const operation = (client: PoolClient) =>
+        this.consumeDbReservation(
+          client,
+          reservationId,
+          quantity,
+          reservedAmount,
+          executedAmount,
         );
-        const row = reservationResult.rows[0];
-        if (!row) throw new NotFoundException(`Reservation ${reservationId} was not found`);
-        const reservation = this.mapReservation(row);
-        if (reservation.status !== 'ACTIVE') return reservation;
+      return transaction ? operation(transaction) : this.withTransaction(operation);
+    }
 
-        await client.query(
-          `SELECT 1 FROM balance_accounts
-           WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3
-           FOR UPDATE`,
-          [reservation.participantId, reservation.seriesCode, reservation.compliancePeriod],
-        );
+    const reservation = this.reservations.get(reservationId);
+    if (!reservation) throw new NotFoundException(`Reservation ${reservationId} was not found`);
+    const key = this.key(
+      reservation.participantId,
+      reservation.seriesCode,
+      reservation.compliancePeriod,
+    );
+    return this.mutex.runExclusive(key, () => {
+      this.assertConsumable(reservation, quantity, reservedAmount, executedAmount);
+      const balance = this.requireBalance(
+        reservation.participantId,
+        reservation.seriesCode,
+        reservation.compliancePeriod,
+      );
+      if (reservation.kind === 'SELL_QUOTA') {
+        balance.reservedSell -= quantity;
+        balance.executedSellPending += quantity;
+      } else {
+        balance.reservedBuyFunds -= reservedAmount;
+        balance.reservedBuyQuantity -= quantity;
+        balance.executedBuyPending += quantity;
+        balance.executedBuyPendingFunds += executedAmount;
+      }
+      balance.version += 1;
+      reservation.remainingQuantity -= quantity;
+      reservation.remainingAmount -= reservedAmount;
+      if (reservation.remainingQuantity === 0) {
+        reservation.status = 'CONSUMED';
+        reservation.consumedAt = new Date().toISOString();
+      }
+      return { ...reservation };
+    });
+  }
 
-        const update =
-          reservation.kind === 'SELL_QUOTA'
-            ? `UPDATE balance_accounts
-                 SET reserved_sell = reserved_sell - $4, version = version + 1, updated_at = now()
-               WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`
-            : `UPDATE balance_accounts
-                 SET reserved_buy_funds = reserved_buy_funds - $4,
-                     reserved_buy_quantity = reserved_buy_quantity - $5,
-                     version = version + 1,
-                     updated_at = now()
-               WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`;
-        const values =
-          reservation.kind === 'SELL_QUOTA'
-            ? [reservation.participantId, reservation.seriesCode, reservation.compliancePeriod, reservation.quantity]
-            : [
-                reservation.participantId,
-                reservation.seriesCode,
-                reservation.compliancePeriod,
-                reservation.amount,
-                reservation.quantity,
-              ];
-        await client.query(update, values);
-
-        const released = await client.query<ReservationRow>(
-          `UPDATE balance_reservations
-             SET status = 'RELEASED', released_at = now()
-           WHERE reservation_id = $1
-           RETURNING *`,
-          [reservationId],
-        );
-        return this.mapReservation(released.rows[0]!);
-      });
+  async releaseReservation(
+    reservationId: string,
+    transaction?: PoolClient,
+  ): Promise<BalanceReservation> {
+    if (this.pool) {
+      const operation = (client: PoolClient) => this.releaseDbReservation(client, reservationId);
+      return transaction ? operation(transaction) : this.withTransaction(operation);
     }
 
     const reservation = this.reservations.get(reservationId);
@@ -298,13 +323,15 @@ export class PositionBalanceService implements OnModuleDestroy {
         reservation.compliancePeriod,
       );
       if (reservation.kind === 'SELL_QUOTA') {
-        balance.reservedSell -= reservation.quantity;
+        balance.reservedSell -= reservation.remainingQuantity;
       } else {
-        balance.reservedBuyFunds -= reservation.amount;
-        balance.reservedBuyQuantity -= reservation.quantity;
+        balance.reservedBuyFunds -= reservation.remainingAmount;
+        balance.reservedBuyQuantity -= reservation.remainingQuantity;
       }
       balance.version += 1;
       reservation.status = 'RELEASED';
+      reservation.remainingQuantity = 0;
+      reservation.remainingAmount = 0;
       reservation.releasedAt = new Date().toISOString();
       return { ...reservation };
     });
@@ -368,6 +395,7 @@ export class PositionBalanceService implements OnModuleDestroy {
       b.reserved_buy_funds,
       b.reserved_buy_quantity,
       b.executed_buy_pending,
+      b.executed_buy_pending_funds,
       b.version
     FROM annual_compliance_positions p
     JOIN participants participant ON participant.participant_id = p.participant_id
@@ -406,6 +434,10 @@ export class PositionBalanceService implements OnModuleDestroy {
       reservedBuyFunds: this.toSafeNumber(row.reserved_buy_funds, 'reserved_buy_funds'),
       reservedBuyQuantity: this.toSafeNumber(row.reserved_buy_quantity, 'reserved_buy_quantity'),
       executedBuyPending: this.toSafeNumber(row.executed_buy_pending, 'executed_buy_pending'),
+      executedBuyPendingFunds: this.toSafeNumber(
+        row.executed_buy_pending_funds,
+        'executed_buy_pending_funds',
+      ),
       version: row.version,
     };
     return { position, balance };
@@ -414,6 +446,132 @@ export class PositionBalanceService implements OnModuleDestroy {
   private snapshotFromRow(row: PositionBalanceRow): PositionSnapshot {
     const { position, balance } = this.stateFromRow(row);
     return calculatePosition(position, balance);
+  }
+
+  private async releaseDbReservation(
+    client: PoolClient,
+    reservationId: string,
+  ): Promise<BalanceReservation> {
+    const reservationResult = await client.query<ReservationRow>(
+      'SELECT * FROM balance_reservations WHERE reservation_id = $1 FOR UPDATE',
+      [reservationId],
+    );
+    const row = reservationResult.rows[0];
+    if (!row) throw new NotFoundException(`Reservation ${reservationId} was not found`);
+    const reservation = this.mapReservation(row);
+    if (reservation.status !== 'ACTIVE') return reservation;
+
+    await client.query(
+      `SELECT 1 FROM balance_accounts
+       WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3
+       FOR UPDATE`,
+      [reservation.participantId, reservation.seriesCode, reservation.compliancePeriod],
+    );
+    if (reservation.kind === 'SELL_QUOTA') {
+      await client.query(
+        `UPDATE balance_accounts
+         SET reserved_sell = reserved_sell - $4, version = version + 1, updated_at = now()
+         WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`,
+        [
+          reservation.participantId,
+          reservation.seriesCode,
+          reservation.compliancePeriod,
+          reservation.remainingQuantity,
+        ],
+      );
+    } else {
+      await client.query(
+        `UPDATE balance_accounts
+         SET reserved_buy_funds = reserved_buy_funds - $4,
+             reserved_buy_quantity = reserved_buy_quantity - $5,
+             version = version + 1,
+             updated_at = now()
+         WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`,
+        [
+          reservation.participantId,
+          reservation.seriesCode,
+          reservation.compliancePeriod,
+          reservation.remainingAmount,
+          reservation.remainingQuantity,
+        ],
+      );
+    }
+
+    const released = await client.query<ReservationRow>(
+      `UPDATE balance_reservations
+       SET status = 'RELEASED', remaining_quantity = 0, remaining_amount = 0, released_at = now()
+       WHERE reservation_id = $1
+       RETURNING *`,
+      [reservationId],
+    );
+    return this.mapReservation(released.rows[0]!);
+  }
+
+  private async consumeDbReservation(
+    client: PoolClient,
+    reservationId: string,
+    quantity: number,
+    reservedAmount: number,
+    executedAmount: number,
+  ): Promise<BalanceReservation> {
+    const reservationResult = await client.query<ReservationRow>(
+      'SELECT * FROM balance_reservations WHERE reservation_id = $1 FOR UPDATE',
+      [reservationId],
+    );
+    const row = reservationResult.rows[0];
+    if (!row) throw new NotFoundException(`Reservation ${reservationId} was not found`);
+    const reservation = this.mapReservation(row);
+    this.assertConsumable(reservation, quantity, reservedAmount, executedAmount);
+
+    await client.query(
+      `SELECT 1 FROM balance_accounts
+       WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3
+       FOR UPDATE`,
+      [reservation.participantId, reservation.seriesCode, reservation.compliancePeriod],
+    );
+
+    if (reservation.kind === 'SELL_QUOTA') {
+      await client.query(
+        `UPDATE balance_accounts
+         SET reserved_sell = reserved_sell - $4,
+             executed_sell_pending = executed_sell_pending + $4,
+             version = version + 1,
+             updated_at = now()
+         WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`,
+        [reservation.participantId, reservation.seriesCode, reservation.compliancePeriod, quantity],
+      );
+    } else {
+      await client.query(
+        `UPDATE balance_accounts
+         SET reserved_buy_funds = reserved_buy_funds - $4,
+             reserved_buy_quantity = reserved_buy_quantity - $5,
+             executed_buy_pending = executed_buy_pending + $5,
+             executed_buy_pending_funds = executed_buy_pending_funds + $6,
+             version = version + 1,
+             updated_at = now()
+         WHERE participant_id = $1 AND series_code = $2 AND compliance_period = $3`,
+        [
+          reservation.participantId,
+          reservation.seriesCode,
+          reservation.compliancePeriod,
+          reservedAmount,
+          quantity,
+          executedAmount,
+        ],
+      );
+    }
+
+    const updated = await client.query<ReservationRow>(
+      `UPDATE balance_reservations
+       SET remaining_quantity = remaining_quantity - $2,
+           remaining_amount = remaining_amount - $3,
+           status = CASE WHEN remaining_quantity - $2 = 0 THEN 'CONSUMED' ELSE 'ACTIVE' END,
+           consumed_at = CASE WHEN remaining_quantity - $2 = 0 THEN now() ELSE NULL END
+       WHERE reservation_id = $1
+       RETURNING *`,
+      [reservationId, quantity, reservedAmount],
+    );
+    return this.mapReservation(updated.rows[0]!);
   }
 
   private async findExistingDbReservation(
@@ -454,8 +612,9 @@ export class PositionBalanceService implements OnModuleDestroy {
   ): Promise<BalanceReservation> {
     const result = await client.query<ReservationRow>(
       `INSERT INTO balance_reservations (
-         participant_id, series_code, compliance_period, order_reference, kind, quantity, amount, status
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE')
+         participant_id, series_code, compliance_period, order_reference, kind,
+         quantity, amount, remaining_quantity, remaining_amount, status
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $6, $7, 'ACTIVE')
        RETURNING *`,
       [
         dto.participantId,
@@ -480,9 +639,12 @@ export class PositionBalanceService implements OnModuleDestroy {
       kind: row.kind,
       quantity: this.toSafeNumber(row.quantity, 'quantity'),
       amount: this.toSafeNumber(row.amount, 'amount'),
+      remainingQuantity: this.toSafeNumber(row.remaining_quantity, 'remaining_quantity'),
+      remainingAmount: this.toSafeNumber(row.remaining_amount, 'remaining_amount'),
       status: row.status,
       createdAt: row.created_at.toISOString(),
       ...(row.released_at ? { releasedAt: row.released_at.toISOString() } : {}),
+      ...(row.consumed_at ? { consumedAt: row.consumed_at.toISOString() } : {}),
     };
   }
 
@@ -501,6 +663,8 @@ export class PositionBalanceService implements OnModuleDestroy {
       kind,
       quantity,
       amount,
+      remainingQuantity: quantity,
+      remainingAmount: amount,
       status: 'ACTIVE',
       createdAt: new Date().toISOString(),
     };
@@ -570,6 +734,35 @@ export class PositionBalanceService implements OnModuleDestroy {
       );
     }
     return balance;
+  }
+
+  private assertConsumable(
+    reservation: BalanceReservation,
+    quantity: number,
+    reservedAmount: number,
+    executedAmount: number,
+  ): void {
+    if (reservation.status !== 'ACTIVE') {
+      throw new BadRequestException({
+        code: 'BAL-RESERVATION-NOT-ACTIVE',
+        message: 'Only an active reservation can be consumed',
+      });
+    }
+    if (quantity > reservation.remainingQuantity || reservedAmount > reservation.remainingAmount) {
+      throw new BadRequestException({
+        code: 'BAL-RESERVATION-OVERCONSUME',
+        message: 'Execution exceeds the remaining reservation',
+      });
+    }
+    if (reservation.kind === 'SELL_QUOTA' && (reservedAmount !== 0 || executedAmount !== 0)) {
+      throw new BadRequestException('Sell quota consumption cannot include cash amounts');
+    }
+    if (reservation.kind === 'BUY_FUNDS' && executedAmount > reservedAmount) {
+      throw new BadRequestException({
+        code: 'BAL-EXECUTION-ABOVE-RESERVATION',
+        message: 'Executed notional exceeds the consumed reserved amount',
+      });
+    }
   }
 
   private assertBuyCapacity(quantity: number, amount: number, snapshot: PositionSnapshot): void {

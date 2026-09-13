@@ -5,7 +5,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Pool, QueryResultRow } from 'pg';
+import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { KeyedMutex } from '../common/keyed-mutex';
 import { PositionBalanceService } from '../position-balance/position-balance.service';
 import { CreateLimitOrderDto } from './dto/create-limit-order.dto';
@@ -15,8 +15,10 @@ import {
   OrderBookLevel,
   OrderBookSnapshot,
   OrderSide,
+  Trade,
 } from './limit-order.types';
 import { BASELINE_MARKET_RULESET, validateAgainstRuleset } from './market-ruleset';
+import { isActive, planMatches } from './matching-engine';
 
 interface LimitOrderRow extends QueryResultRow {
   order_id: string;
@@ -39,12 +41,32 @@ interface LimitOrderRow extends QueryResultRow {
   closed_at: Date | null;
 }
 
+interface TradeRow extends QueryResultRow {
+  trade_id: string;
+  match_event_id: string;
+  buyer_order_id: string;
+  seller_order_id: string;
+  buyer_participant_id: string;
+  seller_participant_id: string;
+  series_code: string;
+  compliance_period: number;
+  quantity: string;
+  price: string;
+  notional: string;
+  ruleset_id: string;
+  status: 'EXECUTED';
+  trade_sequence: string;
+  executed_at: Date;
+}
+
 @Injectable()
 export class LimitOrderService implements OnModuleDestroy {
   private readonly orders = new Map<string, LimitOrder>();
+  private readonly trades = new Map<string, Trade>();
   private readonly mutex = new KeyedMutex();
   private readonly pool?: Pool;
   private nextPrioritySequence = 1;
+  private nextTradeSequence = 1;
 
   constructor(private readonly positionBalanceService: PositionBalanceService) {
     const usePostgres =
@@ -72,7 +94,7 @@ export class LimitOrderService implements OnModuleDestroy {
         const existing = await this.findByClientOrderId(dto.participantId, dto.clientOrderId);
         if (existing) {
           this.assertSamePayload(existing, dto);
-          return existing;
+          return isActive(existing) ? this.executeMatches(existing.orderId) : existing;
         }
 
         validateAgainstRuleset(
@@ -110,8 +132,9 @@ export class LimitOrderService implements OnModuleDestroy {
                 orderReference,
               });
 
+        let inserted: LimitOrder;
         try {
-          return await this.insertOrder(dto, reservation.reservationId);
+          inserted = await this.insertOrder(dto, reservation.reservationId);
         } catch (error) {
           const concurrentlyCreated = await this.findByClientOrderId(
             dto.participantId,
@@ -124,6 +147,7 @@ export class LimitOrderService implements OnModuleDestroy {
           await this.positionBalanceService.releaseReservation(reservation.reservationId);
           throw error;
         }
+        return this.executeMatches(inserted.orderId);
       },
     );
   }
@@ -160,6 +184,47 @@ export class LimitOrderService implements OnModuleDestroy {
       [seriesCode, compliancePeriod],
     );
     return result.rows.map((row) => this.mapOrder(row));
+  }
+
+  async listTrades(seriesCode: string, compliancePeriod: number): Promise<Trade[]> {
+    if (!this.pool) {
+      return [...this.trades.values()]
+        .filter(
+          (trade) =>
+            trade.seriesCode === seriesCode && trade.compliancePeriod === compliancePeriod,
+        )
+        .sort((left, right) => left.tradeSequence - right.tradeSequence)
+        .map((trade) => ({ ...trade }));
+    }
+    const result = await this.pool.query<TradeRow>(
+      `SELECT * FROM trades
+       WHERE series_code = $1 AND compliance_period = $2
+       ORDER BY trade_sequence`,
+      [seriesCode, compliancePeriod],
+    );
+    return result.rows.map((row) => this.mapTrade(row));
+  }
+
+  async getTrade(tradeId: string): Promise<Trade> {
+    if (!this.pool) {
+      const trade = this.trades.get(tradeId);
+      if (!trade) throw new NotFoundException(`Trade ${tradeId} was not found`);
+      return { ...trade };
+    }
+    const result = await this.pool.query<TradeRow>('SELECT * FROM trades WHERE trade_id = $1', [
+      tradeId,
+    ]);
+    if (!result.rows[0]) throw new NotFoundException(`Trade ${tradeId} was not found`);
+    return this.mapTrade(result.rows[0]);
+  }
+
+  async executeMatches(orderId: string): Promise<LimitOrder> {
+    const order = await this.getOrder(orderId);
+    if (!isActive(order)) return order;
+    const marketKey = `market:${order.seriesCode}:${order.compliancePeriod}`;
+    return this.mutex.runExclusive(marketKey, () =>
+      this.pool ? this.executeDbMatches(orderId, marketKey) : this.executeMemoryMatches(orderId),
+    );
   }
 
   async cancel(orderId: string): Promise<LimitOrder> {
@@ -206,13 +271,220 @@ export class LimitOrderService implements OnModuleDestroy {
     };
   }
 
+  private async executeMemoryMatches(orderId: string): Promise<LimitOrder> {
+    let incoming = this.orders.get(orderId);
+    if (!incoming) throw new NotFoundException(`Order ${orderId} was not found`);
+    if (!isActive(incoming)) return { ...incoming };
+
+    const plans = planMatches(incoming, [...this.orders.values()]);
+    if (plans.length === 0) return { ...incoming };
+    const matchEventId = randomUUID();
+
+    for (const plan of plans) {
+      const resting = this.orders.get(plan.restingOrder.orderId)!;
+      const quantity = Math.min(
+        incoming.remainingQuantity,
+        resting.remainingQuantity,
+        plan.quantity,
+      );
+      if (quantity <= 0) continue;
+      const buyer = incoming.side === 'BUY' ? incoming : resting;
+      const seller = incoming.side === 'SELL' ? incoming : resting;
+      const notional = this.safeNotional(quantity, plan.price);
+
+      await this.positionBalanceService.consumeReservation(
+        buyer.reservationId,
+        quantity,
+        this.safeNotional(quantity, buyer.limitPrice),
+        notional,
+      );
+      await this.positionBalanceService.consumeReservation(seller.reservationId, quantity, 0, 0);
+
+      incoming = this.updateMemoryOrderFill(incoming, quantity);
+      this.updateMemoryOrderFill(resting, quantity);
+      const now = new Date().toISOString();
+      const trade: Trade = {
+        tradeId: randomUUID(),
+        matchEventId,
+        buyerOrderId: buyer.orderId,
+        sellerOrderId: seller.orderId,
+        buyerParticipantId: buyer.participantId,
+        sellerParticipantId: seller.participantId,
+        seriesCode: incoming.seriesCode,
+        compliancePeriod: incoming.compliancePeriod,
+        quantity,
+        price: plan.price,
+        notional,
+        rulesetId: incoming.rulesetId,
+        status: 'EXECUTED',
+        tradeSequence: this.nextTradeSequence++,
+        executedAt: now,
+      };
+      this.trades.set(trade.tradeId, trade);
+    }
+    return { ...incoming };
+  }
+
+  private async executeDbMatches(orderId: string, marketKey: string): Promise<LimitOrder> {
+    const client = await this.pool!.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [marketKey]);
+      const incomingResult = await client.query<LimitOrderRow>(
+        'SELECT * FROM limit_orders WHERE order_id = $1 FOR UPDATE',
+        [orderId],
+      );
+      if (!incomingResult.rows[0]) throw new NotFoundException(`Order ${orderId} was not found`);
+      let incoming = this.mapOrder(incomingResult.rows[0]);
+      if (!isActive(incoming)) {
+        await client.query('COMMIT');
+        return incoming;
+      }
+
+      const priceOperator = incoming.side === 'BUY' ? '<=' : '>=';
+      const priceDirection = incoming.side === 'BUY' ? 'ASC' : 'DESC';
+      const restingResult = await client.query<LimitOrderRow>(
+        `SELECT * FROM limit_orders
+         WHERE series_code = $1
+           AND compliance_period = $2
+           AND side = $3
+           AND status IN ('OPEN', 'PARTIALLY_FILLED')
+           AND participant_id <> $4
+           AND limit_price ${priceOperator} $5
+           AND order_id <> $6
+         ORDER BY limit_price ${priceDirection}, priority_sequence ASC
+         FOR UPDATE`,
+        [
+          incoming.seriesCode,
+          incoming.compliancePeriod,
+          incoming.side === 'BUY' ? 'SELL' : 'BUY',
+          incoming.participantId,
+          incoming.limitPrice,
+          incoming.orderId,
+        ],
+      );
+      const plans = planMatches(
+        incoming,
+        restingResult.rows.map((row) => this.mapOrder(row)),
+      );
+      if (plans.length === 0) {
+        await client.query('COMMIT');
+        return incoming;
+      }
+
+      const matchEvent = await client.query<{ match_event_id: string } & QueryResultRow>(
+        `INSERT INTO match_events (
+           incoming_order_id, series_code, compliance_period, ruleset_id
+         ) VALUES ($1, $2, $3, $4)
+         RETURNING match_event_id`,
+        [incoming.orderId, incoming.seriesCode, incoming.compliancePeriod, incoming.rulesetId],
+      );
+      const matchEventId = matchEvent.rows[0]!.match_event_id;
+
+      for (const plan of plans) {
+        const quantity = Math.min(incoming.remainingQuantity, plan.restingOrder.remainingQuantity);
+        if (quantity <= 0) continue;
+        const buyer = incoming.side === 'BUY' ? incoming : plan.restingOrder;
+        const seller = incoming.side === 'SELL' ? incoming : plan.restingOrder;
+        const notional = this.safeNotional(quantity, plan.price);
+
+        await this.positionBalanceService.consumeReservation(
+          buyer.reservationId,
+          quantity,
+          this.safeNotional(quantity, buyer.limitPrice),
+          notional,
+          client,
+        );
+        await this.positionBalanceService.consumeReservation(
+          seller.reservationId,
+          quantity,
+          0,
+          0,
+          client,
+        );
+
+        incoming = await this.updateDbOrderFill(client, incoming, quantity);
+        await this.updateDbOrderFill(client, plan.restingOrder, quantity);
+        await client.query(
+          `INSERT INTO trades (
+             match_event_id, buyer_order_id, seller_order_id,
+             buyer_participant_id, seller_participant_id,
+             series_code, compliance_period, quantity, price, notional, ruleset_id
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [
+            matchEventId,
+            buyer.orderId,
+            seller.orderId,
+            buyer.participantId,
+            seller.participantId,
+            incoming.seriesCode,
+            incoming.compliancePeriod,
+            quantity,
+            plan.price,
+            notional,
+            incoming.rulesetId,
+          ],
+        );
+      }
+
+      await client.query('COMMIT');
+      return incoming;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private updateMemoryOrderFill(order: LimitOrder, quantity: number): LimitOrder {
+    const now = new Date().toISOString();
+    const remainingQuantity = order.remainingQuantity - quantity;
+    const updated: LimitOrder = {
+      ...order,
+      remainingQuantity,
+      status: remainingQuantity === 0 ? 'FILLED' : 'PARTIALLY_FILLED',
+      updatedAt: now,
+      ...(remainingQuantity === 0 ? { closedAt: now } : {}),
+    };
+    this.orders.set(order.orderId, updated);
+    return updated;
+  }
+
+  private async updateDbOrderFill(
+    client: PoolClient,
+    order: LimitOrder,
+    quantity: number,
+  ): Promise<LimitOrder> {
+    const result = await client.query<LimitOrderRow>(
+      `UPDATE limit_orders
+       SET remaining_quantity = remaining_quantity - $2,
+           status = CASE WHEN remaining_quantity - $2 = 0 THEN 'FILLED' ELSE 'PARTIALLY_FILLED' END,
+           updated_at = now(),
+           closed_at = CASE WHEN remaining_quantity - $2 = 0 THEN now() ELSE NULL END
+       WHERE order_id = $1 AND remaining_quantity >= $2
+       RETURNING *`,
+      [order.orderId, quantity],
+    );
+    if (!result.rows[0]) {
+      throw new BadRequestException({
+        code: 'MATCH-ORDER-OVERFILL',
+        message: `Order ${order.orderId} does not have enough remaining quantity`,
+      });
+    }
+    return this.mapOrder(result.rows[0]);
+  }
+
   private async closeOrder(
     orderId: string,
     targetStatus: Extract<LimitOrderStatus, 'CANCELLED' | 'EXPIRED'>,
   ): Promise<LimitOrder> {
-    return this.mutex.runExclusive(`order:${orderId}`, async () => {
+    const initial = await this.getOrder(orderId);
+    const marketKey = `market:${initial.seriesCode}:${initial.compliancePeriod}`;
+    return this.mutex.runExclusive(marketKey, async () => {
+      if (this.pool) return this.closeDbOrder(orderId, targetStatus, marketKey);
       const current = await this.getOrder(orderId);
-      if (current.status !== 'OPEN') return current;
+      if (!isActive(current)) return current;
 
       const closed = await this.setOrderStatus(current, targetStatus);
       try {
@@ -223,6 +495,43 @@ export class LimitOrderService implements OnModuleDestroy {
         throw error;
       }
     });
+  }
+
+  private async closeDbOrder(
+    orderId: string,
+    targetStatus: Extract<LimitOrderStatus, 'CANCELLED' | 'EXPIRED'>,
+    marketKey: string,
+  ): Promise<LimitOrder> {
+    const client = await this.pool!.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [marketKey]);
+      const currentResult = await client.query<LimitOrderRow>(
+        'SELECT * FROM limit_orders WHERE order_id = $1 FOR UPDATE',
+        [orderId],
+      );
+      if (!currentResult.rows[0]) throw new NotFoundException(`Order ${orderId} was not found`);
+      const current = this.mapOrder(currentResult.rows[0]);
+      if (!isActive(current)) {
+        await client.query('COMMIT');
+        return current;
+      }
+      const updatedResult = await client.query<LimitOrderRow>(
+        `UPDATE limit_orders
+         SET status = $2, updated_at = now(), closed_at = now()
+         WHERE order_id = $1
+         RETURNING *`,
+        [orderId, targetStatus],
+      );
+      await this.positionBalanceService.releaseReservation(current.reservationId, client);
+      await client.query('COMMIT');
+      return this.mapOrder(updatedResult.rows[0]!);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   private async insertOrder(dto: CreateLimitOrderDto, reservationId: string): Promise<LimitOrder> {
@@ -294,13 +603,15 @@ export class LimitOrderService implements OnModuleDestroy {
           (order) =>
             order.seriesCode === seriesCode &&
             order.compliancePeriod === compliancePeriod &&
-            order.status === 'OPEN',
+            isActive(order),
         )
         .map((order) => ({ ...order }));
     }
     const result = await this.pool.query<LimitOrderRow>(
       `SELECT * FROM limit_orders
-       WHERE series_code = $1 AND compliance_period = $2 AND status = 'OPEN'`,
+       WHERE series_code = $1
+         AND compliance_period = $2
+         AND status IN ('OPEN', 'PARTIALLY_FILLED')`,
       [seriesCode, compliancePeriod],
     );
     return result.rows.map((row) => this.mapOrder(row));
@@ -363,6 +674,17 @@ export class LimitOrderService implements OnModuleDestroy {
     }
   }
 
+  private safeNotional(quantity: number, price: number): number {
+    const notional = quantity * price;
+    if (!Number.isSafeInteger(notional) || notional <= 0) {
+      throw new BadRequestException({
+        code: 'MATCH-NOTIONAL-OVERFLOW',
+        message: 'Trade notional exceeds the supported safe integer range',
+      });
+    }
+    return notional;
+  }
+
   private mapOrder(row: LimitOrderRow): LimitOrder {
     return {
       orderId: row.order_id,
@@ -383,6 +705,26 @@ export class LimitOrderService implements OnModuleDestroy {
       createdAt: row.created_at.toISOString(),
       updatedAt: row.updated_at.toISOString(),
       ...(row.closed_at ? { closedAt: row.closed_at.toISOString() } : {}),
+    };
+  }
+
+  private mapTrade(row: TradeRow): Trade {
+    return {
+      tradeId: row.trade_id,
+      matchEventId: row.match_event_id,
+      buyerOrderId: row.buyer_order_id,
+      sellerOrderId: row.seller_order_id,
+      buyerParticipantId: row.buyer_participant_id,
+      sellerParticipantId: row.seller_participant_id,
+      seriesCode: row.series_code,
+      compliancePeriod: row.compliance_period,
+      quantity: this.toSafeNumber(row.quantity, 'quantity'),
+      price: this.toSafeNumber(row.price, 'price'),
+      notional: this.toSafeNumber(row.notional, 'notional'),
+      rulesetId: row.ruleset_id,
+      status: row.status,
+      tradeSequence: this.toSafeNumber(row.trade_sequence, 'trade_sequence'),
+      executedAt: row.executed_at.toISOString(),
     };
   }
 

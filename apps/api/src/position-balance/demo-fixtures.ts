@@ -58,5 +58,6 @@ export const demoBalances: BalanceAccount[] = demoPositions.map((position) => ({
   reservedBuyFunds: 0,
   reservedBuyQuantity: 0,
   executedBuyPending: 0,
+  executedBuyPendingFunds: 0,
   version: 1,
 }));

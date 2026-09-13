@@ -4,7 +4,7 @@ Prototype untuk menghitung posisi kepatuhan tahunan dan mensimulasikan perdagang
 
 ## Status
 
-Tahap 1 Annual Position and Balance telah lolos gate. Tahap 2 LIMIT Order and Order Book menyediakan:
+Tahap 1 dan 2 telah lolos gate. Tahap 3 Matching Engine menyediakan:
 
 - monorepo TypeScript dengan NestJS API dan React web;
 - formula posisi tahunan, batas jual, dan kebutuhan beli;
@@ -15,8 +15,14 @@ Tahap 1 Annual Position and Balance telah lolos gate. Tahap 2 LIMIT Order and Or
 - unit serta integration tests;
 - LIMIT BUY/SELL dengan validasi ruleset, tick, band, lot, dan idempotency;
 - reservasi otomatis saat submit serta release saat cancel/expire;
-- visible bid/ask book berprioritas harga-waktu; dan
-- persistence order dan antrean deterministik di PostgreSQL.
+- visible bid/ask book berprioritas harga-waktu;
+- persistence order dan antrean deterministik di PostgreSQL;
+- matching otomatis berdasarkan price-time priority;
+- harga eksekusi mengikuti resting order;
+- full fill, partial fill, dan multi-order fill;
+- pencegahan self-match;
+- trade dan match-event ledger yang immutable; serta
+- pemindahan reservation ke executed-pending secara atomik saat matching.
 
 Default simulator bukan ketentuan pasar resmi. Parameter market harus dibaca dari MarketRuleset versioned.
 
@@ -67,6 +73,14 @@ pnpm db:down
 - `GET /api/v1/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027`
 
 Ruleset prototype saat ini: reference price Rp75.000, price band Rp60.000–Rp90.000, tick Rp200, dan lot 1 tCO2e. Parameter ini bukan ketentuan pasar resmi dan akan dipindahkan ke ruleset versioned/admin pada tahap 8.
+
+## Endpoint Tahap 3
+
+- Matching otomatis dijalankan oleh `POST /api/v1/orders`.
+- `GET /api/v1/trades?seriesCode=PTBAE-IND&compliancePeriod=2027`
+- `GET /api/v1/trades/:tradeId`
+
+Trade berstatus `EXECUTED` belum mengubah physical holding atau acknowledged compliance position. Kuantitas dan dana dipindahkan ke executed-pending sampai tahap Settlement/SRUK diselesaikan.
 
 ## Dokumentasi
 
