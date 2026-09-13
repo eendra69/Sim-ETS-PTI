@@ -13,6 +13,11 @@ export const BASELINE_MARKET_RULESET: MarketRuleset = {
   currency: 'IDR',
   marketTimeInForce: 'IOC',
   marketProtectionRequired: true,
+  stopTriggerBasis: 'LTP',
+  stopBuyDirection: 'GREATER_THAN_OR_EQUAL',
+  stopSellDirection: 'LESS_THAN_OR_EQUAL',
+  stopActivationType: 'MARKET',
+  stopReservationTiming: 'SUBMISSION',
 };
 
 export function validateAgainstRuleset(

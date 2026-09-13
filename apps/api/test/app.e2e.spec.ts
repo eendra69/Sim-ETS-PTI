@@ -202,4 +202,101 @@ describe('Position and balance API', () => {
 
     expect(response.body.code).toBe('ORD-INVALID-MARKET-FIELDS');
   });
+
+  it('keeps STOP orders in the non-visible trigger book and releases reservation on cancel', async () => {
+    const submitted = await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send({
+        participantId: 'IND-D',
+        clientOrderId: 'E2E-PENDING-STOP',
+        seriesCode: 'PTBAE-IND',
+        compliancePeriod: 2027,
+        side: 'BUY',
+        orderType: 'STOP',
+        quantity: 1_000,
+        stopPrice: 78_000,
+        protectionPrice: 80_000,
+        triggerBasis: 'LTP',
+        activationType: 'MARKET',
+        timeInForce: 'DAY',
+      })
+      .expect(201);
+
+    expect(submitted.body.status).toBe('TRIGGER_PENDING');
+    const triggerBook = await request(app.getHttpServer())
+      .get('/api/v1/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027')
+      .expect(200);
+    expect(triggerBook.body.entries).toEqual([
+      expect.objectContaining({ orderId: submitted.body.orderId, stopPrice: 78_000 }),
+    ]);
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/orders/${submitted.body.orderId}`)
+      .expect(200);
+    const position = await request(app.getHttpServer())
+      .get('/api/v1/positions/IND-D?seriesCode=PTBAE-IND&compliancePeriod=2027')
+      .expect(200);
+    expect(position.body.reservedBuyQuantity).toBe(0);
+  });
+
+  it('automatically activates STOP once from an exact-threshold trade', async () => {
+    const stop = await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send({
+        participantId: 'IND-D',
+        clientOrderId: 'E2E-EXACT-STOP',
+        seriesCode: 'PTBAE-IND',
+        compliancePeriod: 2027,
+        side: 'BUY',
+        orderType: 'STOP',
+        quantity: 2_000,
+        stopPrice: 78_000,
+        protectionPrice: 80_000,
+        triggerBasis: 'LTP',
+        activationType: 'MARKET',
+        timeInForce: 'GTC',
+      })
+      .expect(201);
+    const base = {
+      seriesCode: 'PTBAE-IND',
+      compliancePeriod: 2027,
+      orderType: 'LIMIT',
+      limitPrice: 78_000,
+      timeInForce: 'DAY',
+    };
+    await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send({ ...base, participantId: 'IND-A', clientOrderId: 'E2E-TRIGGER-SOURCE', side: 'SELL', quantity: 1_000 })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send({ ...base, participantId: 'IND-B', clientOrderId: 'E2E-TRIGGER-LIQUIDITY', side: 'SELL', quantity: 2_000 })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/api/v1/orders')
+      .send({ ...base, participantId: 'IND-D', clientOrderId: 'E2E-TRIGGER-TAKER', side: 'BUY', quantity: 1_000 })
+      .expect(201);
+
+    const updated = await request(app.getHttpServer())
+      .get(`/api/v1/orders/${stop.body.orderId}`)
+      .expect(200);
+    expect(updated.body).toMatchObject({ status: 'ACTIVATED' });
+
+    const events = await request(app.getHttpServer())
+      .get('/api/v1/trigger-events?seriesCode=PTBAE-IND&compliancePeriod=2027')
+      .expect(200);
+    expect(events.body).toEqual([
+      expect.objectContaining({
+        stopOrderId: stop.body.orderId,
+        observedLtp: 78_000,
+        activatedOrderId: updated.body.activatedOrderId,
+        activatedTradeIds: [expect.any(String)],
+      }),
+    ]);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/trigger-book/evaluate')
+      .send({ sourceTradeId: events.body[0].sourceTradeId })
+      .expect(201, []);
+  });
 });

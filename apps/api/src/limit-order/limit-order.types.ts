@@ -1,5 +1,6 @@
 export type OrderSide = 'BUY' | 'SELL';
-export type OrderType = 'LIMIT' | 'MARKET';
+export type ExecutableOrderType = 'LIMIT' | 'MARKET';
+export type OrderType = ExecutableOrderType | 'STOP';
 export type TimeInForce = 'DAY' | 'GTC' | 'IOC';
 export type LimitOrderStatus =
   | 'OPEN'
@@ -16,7 +17,7 @@ export interface LimitOrder {
   seriesCode: string;
   compliancePeriod: number;
   side: OrderSide;
-  orderType: OrderType;
+  orderType: ExecutableOrderType;
   rulesetId: string;
   quantity: number;
   remainingQuantity: number;
@@ -25,10 +26,65 @@ export interface LimitOrder {
   timeInForce: TimeInForce;
   status: LimitOrderStatus;
   reservationId: string;
+  parentStopOrderId?: string;
   prioritySequence: number;
   createdAt: string;
   updatedAt: string;
   closedAt?: string;
+}
+
+export type StopOrderStatus =
+  | 'TRIGGER_PENDING'
+  | 'ACTIVATED'
+  | 'CANCELLED'
+  | 'EXPIRED'
+  | 'ACTIVATION_FAILED';
+
+export interface StopOrder {
+  orderId: string;
+  participantId: string;
+  clientOrderId: string;
+  seriesCode: string;
+  compliancePeriod: number;
+  side: OrderSide;
+  orderType: 'STOP';
+  rulesetId: string;
+  quantity: number;
+  remainingQuantity: number;
+  stopPrice: number;
+  protectionPrice: number;
+  triggerBasis: 'LTP';
+  activationType: 'MARKET';
+  timeInForce: Extract<TimeInForce, 'DAY' | 'GTC'>;
+  status: StopOrderStatus;
+  reservationId: string;
+  prioritySequence: number;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string;
+  triggeredAt?: string;
+  activatedOrderId?: string;
+}
+
+export type Order = LimitOrder | StopOrder;
+
+export interface TriggerEvent {
+  triggerEventId: string;
+  stopOrderId: string;
+  sourceTradeId: string;
+  observedLtp: number;
+  triggerBasis: 'LTP';
+  activatedOrderId: string;
+  activatedTradeIds: string[];
+  correlationId: string;
+  triggeredAt: string;
+}
+
+export interface TriggerBookSnapshot {
+  seriesCode: string;
+  compliancePeriod: number;
+  entries: StopOrder[];
+  generatedAt: string;
 }
 
 export interface OrderBookLevel {
@@ -61,6 +117,11 @@ export interface MarketRuleset {
   currency: 'IDR';
   marketTimeInForce: 'IOC';
   marketProtectionRequired: true;
+  stopTriggerBasis: 'LTP';
+  stopBuyDirection: 'GREATER_THAN_OR_EQUAL';
+  stopSellDirection: 'LESS_THAN_OR_EQUAL';
+  stopActivationType: 'MARKET';
+  stopReservationTiming: 'SUBMISSION';
 }
 
 export interface Trade {

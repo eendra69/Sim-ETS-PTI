@@ -24,6 +24,18 @@ interface LimitOrder {
   status: 'OPEN' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'EXPIRED' | 'CANCELLED_REMAINDER';
 }
 
+interface StopOrder {
+  orderId: string;
+  participantId: string;
+  side: 'BUY' | 'SELL';
+  orderType: 'STOP';
+  remainingQuantity: number;
+  stopPrice: number;
+  protectionPrice: number;
+  timeInForce: 'DAY' | 'GTC';
+  status: 'TRIGGER_PENDING' | 'ACTIVATED' | 'CANCELLED' | 'EXPIRED' | 'ACTIVATION_FAILED';
+}
+
 interface Trade {
   tradeId: string;
   buyerParticipantId: string;
@@ -47,6 +59,10 @@ interface OrderBook {
   orders: { bids: LimitOrder[]; asks: LimitOrder[] };
 }
 
+interface TriggerBook {
+  entries: StopOrder[];
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000/api/v1';
 const number = new Intl.NumberFormat('id-ID');
 const money = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
@@ -66,27 +82,31 @@ export function App() {
   const [positions, setPositions] = useState<PositionSnapshot[]>([]);
   const [book, setBook] = useState<OrderBook>({ bids: [], asks: [], orders: { bids: [], asks: [] } });
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [triggerBook, setTriggerBook] = useState<TriggerBook>({ entries: [] });
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [participantId, setParticipantId] = useState('IND-A');
   const [side, setSide] = useState<'BUY' | 'SELL'>('SELL');
-  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET'>('LIMIT');
+  const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET' | 'STOP'>('LIMIT');
   const [quantity, setQuantity] = useState(5_000);
   const [limitPrice, setLimitPrice] = useState(75_000);
   const [protectionPrice, setProtectionPrice] = useState(76_000);
+  const [stopPrice, setStopPrice] = useState(78_000);
   const [timeInForce, setTimeInForce] = useState<'DAY' | 'GTC' | 'IOC'>('DAY');
 
   const refresh = useCallback(async () => {
     try {
-      const [nextPositions, nextBook, nextTrades] = await Promise.all([
+      const [nextPositions, nextBook, nextTrades, nextTriggerBook] = await Promise.all([
         api<PositionSnapshot[]>('/positions?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
+        api<TriggerBook>('/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
       ]);
       setPositions(nextPositions);
       setBook(nextBook);
       setTrades(nextTrades);
+      setTriggerBook(nextTriggerBook);
       setError(undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tidak dapat memuat data');
@@ -111,7 +131,7 @@ export function App() {
     setNotice(undefined);
     setError(undefined);
     try {
-      const order = await api<LimitOrder>('/orders', {
+      const order = await api<LimitOrder | StopOrder>('/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -124,7 +144,15 @@ export function App() {
           quantity,
           ...(orderType === 'LIMIT'
             ? { limitPrice, timeInForce }
-            : { protectionPrice, timeInForce: 'IOC' }),
+            : orderType === 'MARKET'
+              ? { protectionPrice, timeInForce: 'IOC' }
+              : {
+                  stopPrice,
+                  protectionPrice,
+                  triggerBasis: 'LTP',
+                  activationType: 'MARKET',
+                  timeInForce,
+                }),
         }),
       });
       setNotice(
@@ -164,9 +192,9 @@ export function App() {
         <div>
           <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
           <h1>PTBAE-IND</h1>
-          <p className="subtitle">LIMIT & MARKET Order · Compliance Period 2027</p>
+          <p className="subtitle">LIMIT, MARKET & STOP Order · Compliance Period 2027</p>
         </div>
-        <span className="status">Tahap 4</span>
+        <span className="status">Tahap 5</span>
       </header>
 
       <section className="summary" aria-label="Ringkasan pasar">
@@ -185,10 +213,11 @@ export function App() {
           </div>
           <div className="form-grid">
             <label>Peserta<select value={participantId} onChange={(event) => setParticipantId(event.target.value)}>{positions.map((position) => <option key={position.participantId} value={position.participantId}>{position.participantId} · {position.participantName}</option>)}</select></label>
-            <label>Jenis order<select value={orderType} onChange={(event) => { const next = event.target.value as 'LIMIT' | 'MARKET'; setOrderType(next); setTimeInForce(next === 'MARKET' ? 'IOC' : 'DAY'); }}><option>LIMIT</option><option>MARKET</option></select></label>
+            <label>Jenis order<select value={orderType} onChange={(event) => { const next = event.target.value as 'LIMIT' | 'MARKET' | 'STOP'; setOrderType(next); setTimeInForce(next === 'MARKET' ? 'IOC' : 'DAY'); }}><option>LIMIT</option><option>MARKET</option><option>STOP</option></select></label>
             <label>Sisi<select value={side} onChange={(event) => setSide(event.target.value as 'BUY' | 'SELL')}><option>SELL</option><option>BUY</option></select></label>
             <label>Quantity<input type="number" min="1" step="1" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} /></label>
             {orderType === 'LIMIT' ? <label>Limit price<input type="number" min="60000" max="90000" step="200" value={limitPrice} onChange={(event) => setLimitPrice(Number(event.target.value))} /></label> : <label>{side === 'BUY' ? 'Protection ceiling' : 'Protection floor'}<input type="number" min="60000" max="90000" step="200" value={protectionPrice} onChange={(event) => setProtectionPrice(Number(event.target.value))} /></label>}
+            {orderType === 'STOP' ? <label>Stop price · LTP<input type="number" min="60000" max="90000" step="200" value={stopPrice} onChange={(event) => setStopPrice(Number(event.target.value))} /></label> : null}
             <label>Time in force<select value={timeInForce} disabled={orderType === 'MARKET'} onChange={(event) => setTimeInForce(event.target.value as 'DAY' | 'GTC')}><option>DAY</option><option>GTC</option>{orderType === 'MARKET' ? <option>IOC</option> : null}</select></label>
           </div>
           <button type="submit" disabled={busy}>{busy ? 'Memproses…' : `Kirim ${side} ${orderType}`}</button>
@@ -202,6 +231,11 @@ export function App() {
             <div><h3>Ask</h3>{book.asks.length === 0 ? <p className="empty">Belum ada ask</p> : book.asks.map((level) => <div className="book-row ask" key={level.price}><strong>{money.format(level.price)}</strong><span>{number.format(level.quantity)}</span><small>{level.orderCount}</small></div>)}</div>
           </div>
         </section>
+      </section>
+
+      <section className="panel orders-panel">
+        <div className="panel-heading compact"><div><p className="eyebrow">NON-VISIBLE CONDITIONAL QUEUE</p><h2>Trigger book</h2></div><p>STOP menunggu LTP: BUY aktif saat LTP ≥ stop, SELL saat LTP ≤ stop.</p></div>
+        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Side</th><th>Stop price</th><th>Protection</th><th>Quantity</th><th>TIF</th><th></th></tr></thead><tbody>{triggerBook.entries.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada STOP pending</td></tr> : triggerBook.entries.map((order) => <tr key={order.orderId}><td>{order.participantId}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.stopPrice)}</td><td>{money.format(order.protectionPrice)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
       </section>
 
       <section className="panel orders-panel">

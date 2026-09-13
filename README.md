@@ -4,7 +4,7 @@ Prototype untuk menghitung posisi kepatuhan tahunan dan mensimulasikan perdagang
 
 ## Status
 
-Tahap 1 sampai 3 telah lolos gate. Tahap 4 MARKET Order menyediakan:
+Tahap 1 sampai 4 telah lolos gate. Tahap 5 STOP/Trigger Book menyediakan:
 
 - monorepo TypeScript dengan NestJS API dan React web;
 - formula posisi tahunan, batas jual, dan kebutuhan beli;
@@ -25,7 +25,11 @@ Tahap 1 sampai 3 telah lolos gate. Tahap 4 MARKET Order menyediakan:
 - pemindahan reservation ke executed-pending secara atomik saat matching;
 - MARKET BUY/SELL dengan protection ceiling/floor wajib;
 - IOC multi-level sweep tanpa menempatkan MARKET ke visible book; dan
-- `CANCELLED_REMAINDER` serta pelepasan reservation yang tidak terpakai.
+- `CANCELLED_REMAINDER` serta pelepasan reservation yang tidak terpakai;
+- STOP BUY/SELL non-visible dengan trigger LTP;
+- reservasi sejak submission serta release saat cancel/expire;
+- aktivasi tepat satu kali menjadi protected MARKET IOC; dan
+- correlation chain dari source trade ke TriggerEvent, activated order, dan trade hasil aktivasi.
 
 Default simulator bukan ketentuan pasar resmi. Parameter market harus dibaca dari MarketRuleset versioned.
 
@@ -90,6 +94,17 @@ Trade berstatus `EXECUTED` belum mengubah physical holding atau acknowledged com
 MARKET memakai endpoint submission yang sama, `POST /api/v1/orders`, dengan `orderType: "MARKET"`, `timeInForce: "IOC"`, dan `protectionPrice`. MARKET tidak menerima `limitPrice`. Untuk BUY, protectionPrice adalah harga maksimum; untuk SELL, protectionPrice adalah harga minimum.
 
 Jika depth habis atau protection tercapai, bagian yang sempat terisi tetap menjadi trade dan sisa quantity berstatus `CANCELLED_REMAINDER`. MARKET yang tidak menghasilkan trade juga berakhir dengan status tersebut dan tidak masuk order book.
+
+## Tahap 5 STOP/Trigger Book
+
+STOP memakai `POST /api/v1/orders` dengan `orderType: "STOP"`, `stopPrice`, `protectionPrice`, `triggerBasis: "LTP"`, `activationType: "MARKET"`, serta TIF `DAY` atau `GTC`. BUY aktif saat LTP ≥ stopPrice; SELL aktif saat LTP ≤ stopPrice. Protection BUY harus sama dengan atau lebih tinggi dari stop price, sedangkan protection SELL harus sama dengan atau lebih rendah.
+
+STOP berstatus `TRIGGER_PENDING` tidak terlihat di bid/ask depth, tetapi saldo sudah direservasi sejak submission. Setelah terpicu, sistem membuat child MARKET IOC tepat satu kali. Cancel atau expiry sebelum trigger melepaskan reservasi dan mencegah aktivasi.
+
+- `GET /api/v1/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027`
+- `POST /api/v1/trigger-book/evaluate` untuk replay idempotent berdasarkan `sourceTradeId`
+- `GET /api/v1/trigger-events?seriesCode=PTBAE-IND&compliancePeriod=2027`
+- `GET /api/v1/trigger-events/:triggerEventId`
 
 ## Dokumentasi
 

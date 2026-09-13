@@ -47,6 +47,28 @@ describe('LimitOrderService', () => {
     timeInForce: 'IOC',
   });
 
+  const stop = (
+    participantId: string,
+    clientOrderId: string,
+    side: 'BUY' | 'SELL',
+    quantity: number,
+    stopPrice: number,
+    protectionPrice: number,
+  ): CreateOrderDto => ({
+    participantId,
+    clientOrderId,
+    seriesCode: 'PTBAE-IND',
+    compliancePeriod: 2027,
+    side,
+    orderType: 'STOP',
+    quantity,
+    stopPrice,
+    protectionPrice,
+    triggerBasis: 'LTP',
+    activationType: 'MARKET',
+    timeInForce: 'DAY',
+  });
+
   it('sorts asks by price, then FIFO within the same price', async () => {
     const firstAtPrice = await service.submit(sell('IND-A', 'ASK-A', 70_000));
     const secondAtPrice = await service.submit(sell('IND-B', 'ASK-B', 70_000));
@@ -322,6 +344,130 @@ describe('LimitOrderService', () => {
       service.submit({ ...sell('IND-A', 'LIMIT-WITH-IOC', 75_000), timeInForce: 'IOC' }),
     ).rejects.toMatchObject({
       response: expect.objectContaining({ code: 'ORD-INVALID-LIMIT-FIELDS' }),
+    });
+  });
+
+  it('keeps STOP liquidity non-visible while reserving capacity at submission', async () => {
+    const order = await service.submit(stop('IND-D', 'PENDING-STOP', 'BUY', 5_000, 78_000, 80_000));
+    const retry = await service.submit(stop('IND-D', 'PENDING-STOP', 'BUY', 5_000, 78_000, 80_000));
+    const position = await positionService.getPosition('IND-D', 'PTBAE-IND', 2027);
+
+    expect(order).toMatchObject({ orderType: 'STOP', status: 'TRIGGER_PENDING' });
+    expect(retry.orderId).toBe(order.orderId);
+    expect((await service.getTriggerBook('PTBAE-IND', 2027)).entries).toHaveLength(1);
+    expect((await service.getOrderBook('PTBAE-IND', 2027)).bids).toEqual([]);
+    expect(position).toMatchObject({ reservedBuyQuantity: 5_000, reservedBuyFunds: 400_000_000 });
+  });
+
+  it('leaves a BUY STOP pending below its LTP threshold', async () => {
+    const stopOrder = await service.submit(
+      stop('IND-D', 'BELOW-TRIGGER', 'BUY', 5_000, 78_000, 80_000),
+    );
+    await service.submit(sell('IND-A', 'BELOW-SOURCE-ASK', 76_000, 1_000));
+    await service.submit({ ...sell('IND-D', 'BELOW-SOURCE-BUY', 76_000, 1_000), side: 'BUY' });
+
+    expect(await service.getOrder(stopOrder.orderId)).toMatchObject({ status: 'TRIGGER_PENDING' });
+    expect(await service.listTriggerEvents('PTBAE-IND', 2027)).toEqual([]);
+  });
+
+  it('activates a BUY STOP exactly once at the LTP threshold and preserves its ID chain', async () => {
+    const stopOrder = await service.submit(
+      stop('IND-D', 'EXACT-TRIGGER', 'BUY', 5_000, 78_000, 80_000),
+    );
+    await service.submit(sell('IND-A', 'EXACT-SOURCE-ASK', 78_000, 1_000));
+    await service.submit(sell('IND-B', 'EXACT-ACTIVATION-ASK', 78_000, 5_000));
+    await service.submit({ ...sell('IND-D', 'EXACT-SOURCE-BUY', 78_000, 1_000), side: 'BUY' });
+
+    const updated = await service.getOrder(stopOrder.orderId);
+    const events = await service.listTriggerEvents('PTBAE-IND', 2027);
+    const sourceTrade = (await service.listTrades('PTBAE-IND', 2027))[0]!;
+
+    expect(updated).toMatchObject({ status: 'ACTIVATED' });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      stopOrderId: stopOrder.orderId,
+      sourceTradeId: sourceTrade.tradeId,
+      observedLtp: 78_000,
+      activatedOrderId: (updated as { activatedOrderId: string }).activatedOrderId,
+    });
+    expect(events[0]!.activatedTradeIds).toHaveLength(1);
+    expect(await service.evaluateTriggersForTrade(sourceTrade.tradeId)).toEqual([]);
+    expect(await service.listTriggerEvents('PTBAE-IND', 2027)).toHaveLength(1);
+  });
+
+  it('activates a SELL STOP when LTP is at or below the stop price', async () => {
+    const stopOrder = await service.submit(
+      stop('IND-A', 'SELL-TRIGGER', 'SELL', 5_000, 74_000, 70_000),
+    );
+    await service.submit({ ...sell('IND-D', 'SELL-TRIGGER-BID', 74_000, 6_000), side: 'BUY' });
+    await service.submit(sell('IND-B', 'SELL-TRIGGER-SOURCE', 74_000, 1_000));
+
+    expect(await service.getOrder(stopOrder.orderId)).toMatchObject({ status: 'ACTIVATED' });
+    expect((await service.listTrades('PTBAE-IND', 2027)).map((trade) => trade.quantity)).toEqual([
+      1_000,
+      5_000,
+    ]);
+  });
+
+  it('cancels a pending STOP and releases its reservation before activation', async () => {
+    const order = await service.submit(
+      stop('IND-D', 'CANCEL-PENDING-STOP', 'BUY', 5_000, 78_000, 80_000),
+    );
+    const cancelled = await service.cancel(order.orderId);
+    const position = await positionService.getPosition('IND-D', 'PTBAE-IND', 2027);
+
+    expect(cancelled.status).toBe('CANCELLED');
+    expect((await service.getTriggerBook('PTBAE-IND', 2027)).entries).toEqual([]);
+    expect(position).toMatchObject({ reservedBuyQuantity: 0, reservedBuyFunds: 0 });
+  });
+
+  it('expires a DAY STOP before trigger and prevents later activation', async () => {
+    const order = await service.submit(
+      stop('IND-D', 'EXPIRE-PENDING-STOP', 'BUY', 5_000, 78_000, 80_000),
+    );
+    const expired = await service.expireDayOrders('PTBAE-IND', 2027);
+
+    expect(expired).toEqual([expect.objectContaining({ orderId: order.orderId, status: 'EXPIRED' })]);
+    expect((await service.getTriggerBook('PTBAE-IND', 2027)).entries).toEqual([]);
+    expect(await positionService.getPosition('IND-D', 'PTBAE-IND', 2027)).toMatchObject({
+      reservedBuyQuantity: 0,
+      reservedBuyFunds: 0,
+    });
+  });
+
+  it('activates on a gap but does not trade outside STOP protection', async () => {
+    const stopOrder = await service.submit(
+      stop('IND-D', 'GAP-STOP', 'BUY', 5_000, 78_000, 78_000),
+    );
+    await service.submit(sell('IND-A', 'GAP-SOURCE-ASK', 80_000, 1_000));
+    await service.submit(sell('IND-B', 'GAP-ACTIVATION-ASK', 80_000, 5_000));
+    await service.submit({ ...sell('IND-D', 'GAP-SOURCE-BUY', 80_000, 1_000), side: 'BUY' });
+
+    const updated = await service.getOrder(stopOrder.orderId);
+    const event = (await service.listTriggerEvents('PTBAE-IND', 2027))[0]!;
+    const activated = await service.getOrder(
+      (updated as { activatedOrderId: string }).activatedOrderId,
+    );
+
+    expect(updated.status).toBe('ACTIVATED');
+    expect(activated).toMatchObject({ status: 'CANCELLED_REMAINDER', remainingQuantity: 5_000 });
+    expect(event).toMatchObject({ observedLtp: 80_000, activatedTradeIds: [] });
+    expect((await service.listTrades('PTBAE-IND', 2027))).toHaveLength(1);
+  });
+
+  it('rejects incomplete STOP field combinations', async () => {
+    await expect(
+      service.submit({
+        ...stop('IND-D', 'INVALID-STOP', 'BUY', 5_000, 78_000, 80_000),
+        triggerBasis: undefined,
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'ORD-INVALID-STOP-FIELDS' }),
+    });
+    await expect(
+      service.submit(stop('IND-D', 'INVALID-STOP-PROTECTION', 'BUY', 5_000, 78_000, 76_000)),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'ORD-INVALID-STOP-PROTECTION' }),
     });
   });
 });

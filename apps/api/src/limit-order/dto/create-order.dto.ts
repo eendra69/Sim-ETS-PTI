@@ -22,7 +22,7 @@ export class CreateOrderDto {
   @IsIn(['BUY', 'SELL'])
   side!: OrderSide;
 
-  @IsIn(['LIMIT', 'MARKET'])
+  @IsIn(['LIMIT', 'MARKET', 'STOP'])
   orderType!: OrderType;
 
   @Type(() => Number)
@@ -41,6 +41,20 @@ export class CreateOrderDto {
   @IsInt()
   @IsPositive()
   protectionPrice?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  stopPrice?: number;
+
+  @IsOptional()
+  @IsIn(['LTP'])
+  triggerBasis?: 'LTP';
+
+  @IsOptional()
+  @IsIn(['MARKET'])
+  activationType?: 'MARKET';
 
   @IsIn(['DAY', 'GTC', 'IOC'])
   timeInForce!: TimeInForce;
