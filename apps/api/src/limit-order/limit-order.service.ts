@@ -20,6 +20,7 @@ import {
   StopOrder,
   StopOrderStatus,
   Trade,
+  TradeLeg,
   TriggerBookSnapshot,
   TriggerEvent,
 } from './limit-order.types';
@@ -111,6 +112,20 @@ interface TradeRow extends QueryResultRow {
   status: 'EXECUTED';
   trade_sequence: string;
   executed_at: Date;
+}
+
+interface TradeLegRow extends QueryResultRow {
+  trade_leg_id: string;
+  trade_id: string;
+  participant_id: string;
+  order_id: string;
+  side: OrderSide;
+  quantity: string;
+  notional: string;
+  unit_delta: string;
+  cash_delta: string;
+  status: 'EXECUTED';
+  created_at: Date;
 }
 
 @Injectable()
@@ -271,7 +286,7 @@ export class LimitOrderService implements OnModuleDestroy {
             trade.seriesCode === seriesCode && trade.compliancePeriod === compliancePeriod,
         )
         .sort((left, right) => left.tradeSequence - right.tradeSequence)
-        .map((trade) => ({ ...trade }));
+        .map((trade) => ({ ...trade, legs: trade.legs.map((leg) => ({ ...leg })) }));
     }
     const result = await this.pool.query<TradeRow>(
       `SELECT * FROM trades
@@ -279,20 +294,21 @@ export class LimitOrderService implements OnModuleDestroy {
        ORDER BY trade_sequence`,
       [seriesCode, compliancePeriod],
     );
-    return result.rows.map((row) => this.mapTrade(row));
+    const legsByTrade = await this.listDbTradeLegs(result.rows.map((row) => row.trade_id));
+    return result.rows.map((row) => this.mapTrade(row, legsByTrade.get(row.trade_id) ?? []));
   }
 
   async getTrade(tradeId: string): Promise<Trade> {
     if (!this.pool) {
       const trade = this.trades.get(tradeId);
       if (!trade) throw new NotFoundException(`Trade ${tradeId} was not found`);
-      return { ...trade };
+      return { ...trade, legs: trade.legs.map((leg) => ({ ...leg })) };
     }
     const result = await this.pool.query<TradeRow>('SELECT * FROM trades WHERE trade_id = $1', [
       tradeId,
     ]);
     if (!result.rows[0]) throw new NotFoundException(`Trade ${tradeId} was not found`);
-    return this.mapTrade(result.rows[0]);
+    return this.mapDbTrade(result.rows[0]);
   }
 
   async executeMatches(orderId: string): Promise<LimitOrder> {
@@ -598,8 +614,9 @@ export class LimitOrderService implements OnModuleDestroy {
       incoming = this.updateMemoryOrderFill(incoming, quantity);
       this.updateMemoryOrderFill(resting, quantity);
       const now = new Date().toISOString();
+      const tradeId = randomUUID();
       const trade: Trade = {
-        tradeId: randomUUID(),
+        tradeId,
         matchEventId,
         buyerOrderId: buyer.orderId,
         sellerOrderId: seller.orderId,
@@ -614,6 +631,16 @@ export class LimitOrderService implements OnModuleDestroy {
         status: 'EXECUTED',
         tradeSequence: this.nextTradeSequence++,
         executedAt: now,
+        legs: this.createTradeLegs(
+          tradeId,
+          buyer.orderId,
+          buyer.participantId,
+          seller.orderId,
+          seller.participantId,
+          quantity,
+          notional,
+          now,
+        ),
       };
       this.trades.set(trade.tradeId, trade);
       generatedTrades.push({ ...trade });
@@ -728,7 +755,36 @@ export class LimitOrderService implements OnModuleDestroy {
             incoming.rulesetId,
           ],
         );
-        generatedTrades.push(this.mapTrade(tradeResult.rows[0]!));
+        const tradeRow = tradeResult.rows[0]!;
+        const legResult = await client.query<TradeLegRow>(
+          `INSERT INTO trade_legs (
+             trade_id, participant_id, order_id, side, quantity, notional,
+             unit_delta, cash_delta, status, created_at
+           ) VALUES
+             ($1, $2, $3, 'BUY', $4, $5, $4, $6, 'EXECUTED', $7),
+             ($1, $8, $9, 'SELL', $4, $5, $10, $5, 'EXECUTED', $7)
+           RETURNING *`,
+          [
+            tradeRow.trade_id,
+            buyer.participantId,
+            buyer.orderId,
+            quantity,
+            notional,
+            -notional,
+            tradeRow.executed_at,
+            seller.participantId,
+            seller.orderId,
+            -quantity,
+          ],
+        );
+        generatedTrades.push(
+          this.mapTrade(
+            tradeRow,
+            legResult.rows
+              .map((row) => this.mapTradeLeg(row))
+              .sort((left, right) => (left.side === 'BUY' ? -1 : right.side === 'BUY' ? 1 : 0)),
+          ),
+        );
       }
 
       incoming = await this.finalizeDbMarketRemainder(client, incoming);
@@ -1429,7 +1485,74 @@ export class LimitOrderService implements OnModuleDestroy {
     };
   }
 
-  private mapTrade(row: TradeRow): Trade {
+  private createTradeLegs(
+    tradeId: string,
+    buyerOrderId: string,
+    buyerParticipantId: string,
+    sellerOrderId: string,
+    sellerParticipantId: string,
+    quantity: number,
+    notional: number,
+    createdAt: string,
+  ): TradeLeg[] {
+    return [
+      {
+        tradeLegId: randomUUID(),
+        tradeId,
+        participantId: buyerParticipantId,
+        orderId: buyerOrderId,
+        side: 'BUY',
+        quantity,
+        notional,
+        unitDelta: quantity,
+        cashDelta: -notional,
+        status: 'EXECUTED',
+        createdAt,
+      },
+      {
+        tradeLegId: randomUUID(),
+        tradeId,
+        participantId: sellerParticipantId,
+        orderId: sellerOrderId,
+        side: 'SELL',
+        quantity,
+        notional,
+        unitDelta: -quantity,
+        cashDelta: notional,
+        status: 'EXECUTED',
+        createdAt,
+      },
+    ];
+  }
+
+  private async mapDbTrade(row: TradeRow): Promise<Trade> {
+    const legs = await this.pool!.query<TradeLegRow>(
+      `SELECT * FROM trade_legs
+       WHERE trade_id = $1
+       ORDER BY CASE side WHEN 'BUY' THEN 1 ELSE 2 END`,
+      [row.trade_id],
+    );
+    return this.mapTrade(row, legs.rows.map((leg) => this.mapTradeLeg(leg)));
+  }
+
+  private async listDbTradeLegs(tradeIds: string[]): Promise<Map<string, TradeLeg[]>> {
+    const byTrade = new Map<string, TradeLeg[]>();
+    if (tradeIds.length === 0) return byTrade;
+    const result = await this.pool!.query<TradeLegRow>(
+      `SELECT * FROM trade_legs
+       WHERE trade_id = ANY($1::uuid[])
+       ORDER BY trade_id, CASE side WHEN 'BUY' THEN 1 ELSE 2 END`,
+      [tradeIds],
+    );
+    for (const row of result.rows) {
+      const legs = byTrade.get(row.trade_id) ?? [];
+      legs.push(this.mapTradeLeg(row));
+      byTrade.set(row.trade_id, legs);
+    }
+    return byTrade;
+  }
+
+  private mapTrade(row: TradeRow, legs: TradeLeg[]): Trade {
     return {
       tradeId: row.trade_id,
       matchEventId: row.match_event_id,
@@ -1446,6 +1569,23 @@ export class LimitOrderService implements OnModuleDestroy {
       status: row.status,
       tradeSequence: this.toSafeNumber(row.trade_sequence, 'trade_sequence'),
       executedAt: row.executed_at.toISOString(),
+      legs,
+    };
+  }
+
+  private mapTradeLeg(row: TradeLegRow): TradeLeg {
+    return {
+      tradeLegId: row.trade_leg_id,
+      tradeId: row.trade_id,
+      participantId: row.participant_id,
+      orderId: row.order_id,
+      side: row.side,
+      quantity: this.toSafeNumber(row.quantity, 'quantity'),
+      notional: this.toSafeNumber(row.notional, 'notional'),
+      unitDelta: this.toSafeNumber(row.unit_delta, 'unit_delta'),
+      cashDelta: this.toSafeNumber(row.cash_delta, 'cash_delta'),
+      status: row.status,
+      createdAt: row.created_at.toISOString(),
     };
   }
 

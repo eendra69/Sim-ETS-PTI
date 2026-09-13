@@ -122,6 +122,21 @@ export interface MarketRuleset {
   stopSellDirection: 'LESS_THAN_OR_EQUAL';
   stopActivationType: 'MARKET';
   stopReservationTiming: 'SUBMISSION';
+  marketSessionId: string;
+}
+
+export interface TradeLeg {
+  tradeLegId: string;
+  tradeId: string;
+  participantId: string;
+  orderId: string;
+  side: OrderSide;
+  quantity: number;
+  notional: number;
+  unitDelta: number;
+  cashDelta: number;
+  status: 'EXECUTED';
+  createdAt: string;
 }
 
 export interface Trade {
@@ -140,4 +155,5 @@ export interface Trade {
   status: 'EXECUTED';
   tradeSequence: number;
   executedAt: string;
+  legs: TradeLeg[];
 }

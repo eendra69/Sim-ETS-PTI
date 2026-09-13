@@ -18,6 +18,7 @@ export const BASELINE_MARKET_RULESET: MarketRuleset = {
   stopSellDirection: 'LESS_THAN_OR_EQUAL',
   stopActivationType: 'MARKET',
   stopReservationTiming: 'SUBMISSION',
+  marketSessionId: 'PTBAE-IND-2027-REGULAR',
 };
 
 export function validateAgainstRuleset(

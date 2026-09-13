@@ -16,6 +16,7 @@ services:
       - ./database/migrations/003_matching_engine.sql:/docker-entrypoint-initdb.d/17-matching-engine.sql:ro
       - ./database/migrations/004_market_orders.sql:/docker-entrypoint-initdb.d/18-market-orders.sql:ro
       - ./database/migrations/005_stop_trigger_book.sql:/docker-entrypoint-initdb.d/19-stop-trigger-book.sql:ro
+      - ./database/migrations/006_trade_market_data.sql:/docker-entrypoint-initdb.d/19-trade-market-data.sql:ro
       - ./database/seeds/001_demo_participants.sql:/docker-entrypoint-initdb.d/20-demo-participants.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sim_ets} -d ${POSTGRES_DB:-sim_ets}"]

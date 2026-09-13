@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { join } from 'node:path';
 import { HealthController } from './health.controller';
 import { LimitOrderModule } from './limit-order/limit-order.module';
+import { MarketDataModule } from './market-data/market-data.module';
 import { PositionBalanceModule } from './position-balance/position-balance.module';
 
 @Module({
@@ -13,6 +14,7 @@ import { PositionBalanceModule } from './position-balance/position-balance.modul
     }),
     PositionBalanceModule,
     LimitOrderModule,
+    MarketDataModule,
   ],
   controllers: [HealthController],
 })

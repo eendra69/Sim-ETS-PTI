@@ -4,7 +4,7 @@ Prototype untuk menghitung posisi kepatuhan tahunan dan mensimulasikan perdagang
 
 ## Status
 
-Tahap 1 sampai 4 telah lolos gate. Tahap 5 STOP/Trigger Book menyediakan:
+Tahap 1 sampai 5 telah lolos gate. Tahap 6 Trade/Market Data menyediakan:
 
 - monorepo TypeScript dengan NestJS API dan React web;
 - formula posisi tahunan, batas jual, dan kebutuhan beli;
@@ -24,12 +24,17 @@ Tahap 1 sampai 4 telah lolos gate. Tahap 5 STOP/Trigger Book menyediakan:
 - trade dan match-event ledger yang immutable;
 - pemindahan reservation ke executed-pending secara atomik saat matching;
 - MARKET BUY/SELL dengan protection ceiling/floor wajib;
-- IOC multi-level sweep tanpa menempatkan MARKET ke visible book; dan
+- IOC multi-level sweep tanpa menempatkan MARKET ke visible book;
 - `CANCELLED_REMAINDER` serta pelepasan reservation yang tidak terpakai;
 - STOP BUY/SELL non-visible dengan trigger LTP;
 - reservasi sejak submission serta release saat cancel/expire;
-- aktivasi tepat satu kali menjadi protected MARKET IOC; dan
-- correlation chain dari source trade ke TriggerEvent, activated order, dan trade hasil aktivasi.
+- aktivasi tepat satu kali menjadi protected MARKET IOC;
+- correlation chain dari source trade ke TriggerEvent, activated order, dan trade hasil aktivasi;
+- immutable BUY/SELL TradeLeg untuk setiap trade;
+- explicit `NO_TRADES` state yang memisahkan reference price dari LTP;
+- best bid, best ask, spread, depth, LTP, volume, notional, VWAP, dan OHLC;
+- statistik berbasis trade-sequence window; serta
+- resumable trade-event feed dan deterministic replay.
 
 Default simulator bukan ketentuan pasar resmi. Parameter market harus dibaca dari MarketRuleset versioned.
 
@@ -105,6 +110,17 @@ STOP berstatus `TRIGGER_PENDING` tidak terlihat di bid/ask depth, tetapi saldo s
 - `POST /api/v1/trigger-book/evaluate` untuk replay idempotent berdasarkan `sourceTradeId`
 - `GET /api/v1/trigger-events?seriesCode=PTBAE-IND&compliancePeriod=2027`
 - `GET /api/v1/trigger-events/:triggerEventId`
+
+## Tahap 6 Trade/Market Data
+
+Setiap trade memiliki BUY dan SELL TradeLeg dengan unit serta cash delta yang seimbang. Market-data dibentuk ulang dari immutable trade ledger dan current visible order book; STOP pending tidak ikut depth. Dalam sesi tanpa trade, `state` adalah `NO_TRADES`, sedangkan LTP, VWAP, dan OHLC bernilai `null`. Reference price tetap tersedia sebagai parameter ruleset, bukan LTP sintetis.
+
+- `GET /api/v1/market-data/snapshot?seriesCode=PTBAE-IND&compliancePeriod=2027`
+- `GET /api/v1/market-data/snapshot?...&fromTradeSequence=2&toTradeSequence=10`
+- `GET /api/v1/market-data/events?...&afterTradeSequence=10&limit=100`
+- `GET /api/v1/market-data/replay?seriesCode=PTBAE-IND&compliancePeriod=2027`
+
+VWAP dihitung sebagai total notional dibagi total volume untuk window yang dipilih. Replay menerapkan trade berdasarkan `tradeSequence` dan menghasilkan rolling LTP/OHLCV serta final statistics yang dapat dibandingkan dengan snapshot.
 
 ## Dokumentasi
 

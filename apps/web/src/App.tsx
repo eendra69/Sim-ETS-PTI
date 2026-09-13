@@ -63,12 +63,37 @@ interface TriggerBook {
   entries: StopOrder[];
 }
 
+interface MarketDataSnapshot {
+  state: 'NO_TRADES' | 'TRADING';
+  referencePrice: number;
+  lastTradedPrice: number | null;
+  topOfBook: {
+    bestBid: BookLevel | null;
+    bestAsk: BookLevel | null;
+    spread: number | null;
+  };
+  statistics: {
+    tradeCount: number;
+    volume: number;
+    notional: number;
+    vwap: number | null;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+  };
+}
+
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000/api/v1';
 const number = new Intl.NumberFormat('id-ID');
 const money = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
 
 function signed(value: number): string {
   return `${value > 0 ? '+' : ''}${number.format(value)}`;
+}
+
+function priceOrDash(value: number | null): string {
+  return value === null ? '—' : money.format(value);
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -83,6 +108,22 @@ export function App() {
   const [book, setBook] = useState<OrderBook>({ bids: [], asks: [], orders: { bids: [], asks: [] } });
   const [trades, setTrades] = useState<Trade[]>([]);
   const [triggerBook, setTriggerBook] = useState<TriggerBook>({ entries: [] });
+  const [marketData, setMarketData] = useState<MarketDataSnapshot>({
+    state: 'NO_TRADES',
+    referencePrice: 75_000,
+    lastTradedPrice: null,
+    topOfBook: { bestBid: null, bestAsk: null, spread: null },
+    statistics: {
+      tradeCount: 0,
+      volume: 0,
+      notional: 0,
+      vwap: null,
+      open: null,
+      high: null,
+      low: null,
+      close: null,
+    },
+  });
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -97,16 +138,18 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextPositions, nextBook, nextTrades, nextTriggerBook] = await Promise.all([
+      const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData] = await Promise.all([
         api<PositionSnapshot[]>('/positions?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<TriggerBook>('/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
+        api<MarketDataSnapshot>('/market-data/snapshot?seriesCode=PTBAE-IND&compliancePeriod=2027'),
       ]);
       setPositions(nextPositions);
       setBook(nextBook);
       setTrades(nextTrades);
       setTriggerBook(nextTriggerBook);
+      setMarketData(nextMarketData);
       setError(undefined);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tidak dapat memuat data');
@@ -192,19 +235,24 @@ export function App() {
         <div>
           <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
           <h1>PTBAE-IND</h1>
-          <p className="subtitle">LIMIT, MARKET & STOP Order · Compliance Period 2027</p>
+          <p className="subtitle">Trade & Market Data · Compliance Period 2027</p>
         </div>
-        <span className="status">Tahap 5</span>
+        <span className="status">Tahap 6</span>
       </header>
 
       <section className="summary" aria-label="Ringkasan pasar">
         <article><span>Available supply</span><strong>{number.format(totals.supply)}</strong><small>tCO₂e setelah reservation</small></article>
         <article><span>Available buy need</span><strong>{number.format(totals.demand)}</strong><small>tCO₂e kebutuhan tersisa</small></article>
-        <article><span>Executed trades</span><strong>{number.format(trades.length)}</strong><small>{trades.length ? `LTP ${money.format(trades.at(-1)!.price)}` : 'Belum ada transaksi'}</small></article>
+        <article><span>Executed volume</span><strong>{number.format(marketData.statistics.volume)}</strong><small>{marketData.state === 'TRADING' ? `LTP ${priceOrDash(marketData.lastTradedPrice)}` : 'NO TRADES · LTP belum terbentuk'}</small></article>
       </section>
 
       {error ? <p className="error">{error}</p> : null}
       {notice ? <p className="notice">{notice}</p> : null}
+
+      <section className="panel orders-panel">
+        <div className="panel-heading compact"><div><p className="eyebrow">MARKET DATA SNAPSHOT</p><h2>{marketData.state === 'TRADING' ? 'Live statistics' : 'No-trade state'}</h2></div><p>Reference price tetap terpisah dari LTP dan tidak digunakan untuk membuat trade sintetis.</p></div>
+        <div className="table-wrap"><table><thead><tr><th>Reference</th><th>LTP</th><th>Best bid</th><th>Best ask</th><th>Spread</th><th>VWAP</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th></tr></thead><tbody><tr><td>{money.format(marketData.referencePrice)}</td><td>{priceOrDash(marketData.lastTradedPrice)}</td><td>{priceOrDash(marketData.topOfBook.bestBid?.price ?? null)}</td><td>{priceOrDash(marketData.topOfBook.bestAsk?.price ?? null)}</td><td>{priceOrDash(marketData.topOfBook.spread)}</td><td>{priceOrDash(marketData.statistics.vwap)}</td><td>{priceOrDash(marketData.statistics.open)}</td><td>{priceOrDash(marketData.statistics.high)}</td><td>{priceOrDash(marketData.statistics.low)}</td><td>{priceOrDash(marketData.statistics.close)}</td><td>{number.format(marketData.statistics.volume)}</td></tr></tbody></table></div>
+      </section>
 
       <section className="trading-grid">
         <form className="panel ticket" onSubmit={submitOrder}>

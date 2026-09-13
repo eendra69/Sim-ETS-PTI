@@ -299,4 +299,42 @@ describe('Position and balance API', () => {
       .send({ sourceTradeId: events.body[0].sourceTradeId })
       .expect(201, []);
   });
+
+  it('exposes reproducible market-data snapshot, event feed, and replay', async () => {
+    const snapshot = await request(app.getHttpServer())
+      .get('/api/v1/market-data/snapshot?seriesCode=PTBAE-IND&compliancePeriod=2027')
+      .expect(200);
+
+    expect(snapshot.body).toMatchObject({
+      state: 'TRADING',
+      referencePrice: 75_000,
+      lastTradedPrice: 78_000,
+      statistics: {
+        tradeCount: 3,
+        volume: 4_000,
+        notional: 304_000_000,
+        vwap: 76_000,
+        open: 70_000,
+        high: 78_000,
+        low: 70_000,
+        close: 78_000,
+      },
+    });
+    expect(snapshot.body.lastTrade.legs).toHaveLength(2);
+
+    const events = await request(app.getHttpServer())
+      .get(
+        '/api/v1/market-data/events?seriesCode=PTBAE-IND&compliancePeriod=2027&afterTradeSequence=1&limit=1',
+      )
+      .expect(200);
+    expect(events.body).toEqual([
+      expect.objectContaining({ eventType: 'TRADE', eventSequence: 2 }),
+    ]);
+
+    const replay = await request(app.getHttpServer())
+      .get('/api/v1/market-data/replay?seriesCode=PTBAE-IND&compliancePeriod=2027')
+      .expect(200);
+    expect(replay.body.points).toHaveLength(3);
+    expect(replay.body.finalStatistics).toEqual(snapshot.body.statistics);
+  });
 });
