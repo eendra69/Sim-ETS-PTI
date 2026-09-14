@@ -111,6 +111,23 @@ Endpoint baca katalog:
 
 Kontrak order/trade lama masih menggunakan `compliancePeriod` untuk menjaga kompatibilitas. Propagasi `vintageYear` dan installation lineage ke matching serta settlement dilakukan pada lapisan implementasi berikutnya; UI baru belum boleh menganggap tahun periode sebagai vintage secara implisit.
 
+## Struktur frontend
+
+Frontend React dipisahkan berdasarkan tanggung jawab agar shell dan halaman baru dapat dikembangkan tanpa mencampur kontrak API dengan presentasi:
+
+```text
+apps/web/src/
+  api/          API client dan response types
+  app/          composition root aplikasi
+  auth/         penyimpanan credential sesi browser
+  components/   komponen UI yang dapat dipakai ulang
+  layout/       kerangka layar aplikasi
+  pages/        halaman tingkat route
+  shared/       formatter dan utilitas umum
+```
+
+`MarketDashboardPage` mempertahankan perilaku layar lama selama masa transisi. Perubahan visual shell, sidebar, dan routing dilakukan setelah fondasi ini; semua request baru harus melalui `api/client.ts` dan tipe respons berada di `api/types.ts`.
+
 Generator menghasilkan master peserta, input kepatuhan, expected result, negative test cases, ringkasan kontrol, serta SQL seed. Menjalankan seed berulang kali tidak menggandakan record, menaikkan version tanpa perubahan, atau menimpa saldo transaksi yang sudah aktif.
 
 ```bash

@@ -1,205 +1,29 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { apiRequest as api } from '../api/client';
+import type {
+  AuditEvent,
+  GovernedRuleset,
+  LimitOrder,
+  MarketDataSnapshot,
+  MarketSession,
+  OrderBook,
+  PositionSnapshot,
+  ScenarioDefinition,
+  ScenarioRun,
+  SettlementBundle,
+  StopOrder,
+  SurveillanceAlert,
+  Trade,
+  TriggerBook,
+} from '../api/types';
+import { getSessionApiKey, setSessionApiKey } from '../auth/api-key';
+import { FeedbackBanners } from '../components/FeedbackBanners';
+import { AppShell } from '../layout/AppShell';
+import { money, number, priceOrDash, signed } from '../shared/format';
 
-interface PositionSnapshot {
-  participantId: string;
-  participantName: string;
-  allocatedQuota: number;
-  verifiedEmission: number;
-  netPosition: number;
-  positionStatus: 'SURPLUS' | 'DEFICIT' | 'BALANCED';
-  availableToSell: number;
-  buyNeedRemaining: number;
-  availableBuyNeed: number;
-  acknowledgedPurchases: number;
-  acknowledgedSales: number;
-  executedSellPending: number;
-  executedBuyPending: number;
-  sourceStatus: 'PROJECTED' | 'PROVISIONAL' | 'VERIFIED';
-  dataOrigin: 'UNSPECIFIED' | 'OFFICIAL' | 'SYNTHETIC';
-  sourceReference?: string;
-  businessType?: string;
-  scaleClass?: 'SMALL' | 'MEDIUM' | 'LARGE';
-}
-
-interface LimitOrder {
-  orderId: string;
-  participantId: string;
-  side: 'BUY' | 'SELL';
-  orderType: 'LIMIT' | 'MARKET';
-  remainingQuantity: number;
-  limitPrice?: number;
-  protectionPrice?: number;
-  timeInForce: 'DAY' | 'GTC' | 'IOC';
-  status: 'OPEN' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'EXPIRED' | 'CANCELLED_REMAINDER';
-}
-
-interface StopOrder {
-  orderId: string;
-  participantId: string;
-  side: 'BUY' | 'SELL';
-  orderType: 'STOP';
-  remainingQuantity: number;
-  stopPrice: number;
-  protectionPrice: number;
-  timeInForce: 'DAY' | 'GTC';
-  status: 'TRIGGER_PENDING' | 'ACTIVATED' | 'CANCELLED' | 'EXPIRED' | 'ACTIVATION_FAILED';
-}
-
-interface Trade {
-  tradeId: string;
-  buyerParticipantId: string;
-  sellerParticipantId: string;
-  quantity: number;
-  price: number;
-  notional: number;
-  tradeSequence: number;
-  executedAt: string;
-}
-
-interface BookLevel {
-  price: number;
-  quantity: number;
-  orderCount: number;
-}
-
-interface OrderBook {
-  bids: BookLevel[];
-  asks: BookLevel[];
-  orders: { bids: LimitOrder[]; asks: LimitOrder[] };
-}
-
-interface TriggerBook {
-  entries: StopOrder[];
-}
-
-interface MarketDataSnapshot {
-  state: 'NO_TRADES' | 'TRADING';
-  referencePrice: number;
-  lastTradedPrice: number | null;
-  topOfBook: {
-    bestBid: BookLevel | null;
-    bestAsk: BookLevel | null;
-    spread: number | null;
-  };
-  statistics: {
-    tradeCount: number;
-    volume: number;
-    notional: number;
-    vwap: number | null;
-    open: number | null;
-    high: number | null;
-    low: number | null;
-    close: number | null;
-  };
-}
-
-interface SettlementBundle {
-  settlement: {
-    settlementId: string;
-    tradeId: string;
-    status: 'PENDING' | 'PROCESSING' | 'SETTLED' | 'FAILED' | 'REVERSED';
-    quantity: number;
-    cashAmount: number;
-    failureReason?: string;
-  };
-  registryMessage: {
-    registryMessageId: string;
-    status: 'QUEUED' | 'SENT' | 'ACKNOWLEDGED' | 'REJECTED' | 'RETRY';
-    attemptCount: number;
-    registryReference?: string;
-    errorMessage?: string;
-  };
-  reconciliation: {
-    status: 'OPEN' | 'MATCHED' | 'EXCEPTION' | 'RESOLVED';
-    exceptionReason?: string;
-  };
-  finalized: boolean;
-}
-
-interface GovernedRuleset {
-  rulesetId: string;
-  seriesCode: string;
-  compliancePeriod: number;
-  version: number;
-  status: 'DRAFT' | 'APPROVED' | 'ACTIVE' | 'RETIRED';
-  referencePrice: number;
-  minimumPrice: number;
-  maximumPrice: number;
-  tickSize: number;
-  lotSize: number;
-  marketSessionId: string;
-  sellCapPercentage: number;
-  settlementFinality: 'DVP_SETTLED' | 'SRUK_ACK_RECONCILED';
-  surveillancePriceDeviationBps: number;
-  surveillanceVolumeThreshold: number;
-  repeatedCancelThreshold: number;
-}
-
-interface MarketSession {
-  sessionId: string;
-  status: 'OPEN' | 'HALTED' | 'CLOSED';
-  rulesetId: string;
-}
-
-interface AuditEvent {
-  auditEventId: string;
-  eventSequence: number;
-  eventType: string;
-  entityType: string;
-  actorId: string;
-  correlationId: string;
-  occurredAt: string;
-}
-
-interface SurveillanceAlert {
-  alertId: string;
-  alertSequence: number;
-  alertType: string;
-  severity: string;
-  description: string;
-  status: string;
-}
-
-interface ScenarioDefinition {
-  scenarioId: string;
-  name: string;
-  rulesetId: string;
-}
-
-interface ScenarioRun {
-  runId: string;
-  scenarioId: string;
-  runNumber: number;
-  resultHash: string;
-  isDeterministicMatch?: boolean;
-  result: { finalPositions: Record<string, number>; events: unknown[] };
-}
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000/api/v1';
-const number = new Intl.NumberFormat('id-ID');
-const money = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
-
-function signed(value: number): string {
-  return `${value > 0 ? '+' : ''}${number.format(value)}`;
-}
-
-function priceOrDash(value: number | null): string {
-  return value === null ? '—' : money.format(value);
-}
-
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  const storedApiKey = sessionStorage.getItem('sim-ets-api-key');
-  if (storedApiKey) headers.set('x-api-key', storedApiKey);
-  const response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
-  const body = (await response.json()) as T & { message?: string };
-  if (!response.ok) throw new Error(body.message ?? `API merespons ${response.status}`);
-  return body;
-}
-
-export function App() {
+export function MarketDashboardPage() {
   const [positions, setPositions] = useState<PositionSnapshot[]>([]);
-  const [apiKeyInput, setApiKeyInput] = useState(() => sessionStorage.getItem('sim-ets-api-key') ?? '');
+  const [apiKeyInput, setApiKeyInput] = useState(getSessionApiKey);
   const [positionPeriod, setPositionPeriod] = useState(2025);
   const [activeRuleset, setActiveRuleset] = useState<GovernedRuleset>();
   const [book, setBook] = useState<OrderBook>({ bids: [], asks: [], orders: { bids: [], asks: [] } });
@@ -293,10 +117,8 @@ export function App() {
   );
 
   function applyApiKey(): void {
-    const next = apiKeyInput.trim();
-    if (next) sessionStorage.setItem('sim-ets-api-key', next);
-    else sessionStorage.removeItem('sim-ets-api-key');
-    setNotice(next ? 'API key diterapkan untuk sesi browser ini.' : 'API key sesi dihapus.');
+    const applied = setSessionApiKey(apiKeyInput);
+    setNotice(applied ? 'API key diterapkan untuk sesi browser ini.' : 'API key sesi dihapus.');
     void refresh();
   }
 
@@ -491,7 +313,7 @@ export function App() {
   );
 
   return (
-    <main>
+    <AppShell>
       <header className="hero">
         <div>
           <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
@@ -507,8 +329,7 @@ export function App() {
         <article><span>Executed volume</span><strong>{number.format(marketData.statistics.volume)}</strong><small>{marketData.state === 'TRADING' ? `LTP ${priceOrDash(marketData.lastTradedPrice)}` : 'NO TRADES · LTP belum terbentuk'}</small></article>
       </section>
 
-      {error ? <p className="error">{error}</p> : null}
-      {notice ? <p className="notice">{notice}</p> : null}
+      <FeedbackBanners error={error} notice={notice} />
 
       <section className="panel orders-panel">
         <div className="panel-heading compact"><div><p className="eyebrow">MARKET CONTROL</p><h2>Ruleset & session</h2></div><button className="ghost" disabled={busy} onClick={() => void createRulesetDraft()}>Clone active to draft</button></div>
@@ -585,6 +406,6 @@ export function App() {
       </section>
 
       <footer>Default simulator · Bukan penetapan ketentuan resmi pasar</footer>
-    </main>
+    </AppShell>
   );
 }
