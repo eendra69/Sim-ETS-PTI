@@ -3,6 +3,7 @@ import { apiRequest as api } from '../api/client';
 import type {
   AuditEvent,
   GovernedRuleset,
+  Installation,
   LimitOrder,
   MarketDataSnapshot,
   MarketSession,
@@ -23,6 +24,7 @@ import { money, number, priceOrDash, signed } from '../shared/format';
 
 export function MarketDashboardPage() {
   const [positions, setPositions] = useState<PositionSnapshot[]>([]);
+  const [installations, setInstallations] = useState<Installation[]>([]);
   const [apiKeyInput, setApiKeyInput] = useState(getSessionApiKey);
   const [positionPeriod, setPositionPeriod] = useState(2025);
   const [activeRuleset, setActiveRuleset] = useState<GovernedRuleset>();
@@ -67,8 +69,9 @@ export function MarketDashboardPage() {
   const refresh = useCallback(async () => {
     try {
       const currentRuleset = await api<GovernedRuleset>('/market-rulesets/current');
-      const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements, nextRulesets, nextSession, nextAudit, nextAlerts, nextScenarios] = await Promise.all([
+      const [nextPositions, nextInstallations, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements, nextRulesets, nextSession, nextAudit, nextAlerts, nextScenarios] = await Promise.all([
         api<PositionSnapshot[]>(`/positions?seriesCode=PTBAE-IND&compliancePeriod=${positionPeriod}`),
+        api<Installation[]>('/installations'),
         api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<TriggerBook>('/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
@@ -81,6 +84,7 @@ export function MarketDashboardPage() {
         api<ScenarioDefinition[]>('/scenarios'),
       ]);
       setPositions(nextPositions);
+      setInstallations(nextInstallations);
       setActiveRuleset(currentRuleset);
       setBook(nextBook);
       setTrades(nextTrades);
@@ -311,19 +315,38 @@ export function MarketDashboardPage() {
   const openOrders = [...book.orders.bids, ...book.orders.asks].sort(
     (left, right) => left.limitPrice! - right.limitPrice!,
   );
+  const currentInstallation = installations.find((item) => item.participantId === participantId);
 
   return (
-    <AppShell>
-      <header className="hero">
-        <div>
-          <p className="eyebrow">REGULAR MARKET SIMULATOR</p>
-          <h1>PTBAE-IND</h1>
-          <p className="subtitle">UAT & Production Readiness · Market {activeRuleset?.compliancePeriod ?? 2027} · Position view {positionPeriod}</p>
+    <AppShell
+      participantId={participantId}
+      installationId={currentInstallation?.installationId}
+      positionPeriod={positionPeriod}
+      targetCompliancePeriod={activeRuleset?.compliancePeriod ?? 2027}
+      sessionStatus={marketSession?.status}
+      referencePrice={marketData.referencePrice}
+      lastTradedPrice={marketData.lastTradedPrice}
+      bestAsk={marketData.topOfBook.bestAsk?.price ?? null}
+      volume={marketData.statistics.volume}
+      vwap={marketData.statistics.vwap}
+      rulesetVersion={activeRuleset?.version}
+      authControl={(
+        <div className="auth-control">
+          <label htmlFor="api-key">API key sesi</label>
+          <input id="api-key" type="password" placeholder="Staging API key" value={apiKeyInput} onChange={(event) => setApiKeyInput(event.target.value)} />
+          <button className="ghost" type="button" onClick={applyApiKey}>Apply</button>
         </div>
-        <div className="auth-control"><input type="password" aria-label="API key" placeholder="Staging API key" value={apiKeyInput} onChange={(event) => setApiKeyInput(event.target.value)} /><button className="ghost" type="button" onClick={applyApiKey}>Apply</button><span className="status">Tahap 9</span></div>
+      )}
+    >
+      <header className="view-header" id="regular-market">
+        <div>
+          <h1>Pasar Reguler</h1>
+          <p className="subtitle">Order, matching, market data, settlement, dan posisi kepatuhan PTBAE-IND.</p>
+        </div>
+        <span className="status">UAT Ready</span>
       </header>
 
-      <section className="summary" aria-label="Ringkasan pasar">
+      <section className="summary anchor-section" id="dashboard" aria-label="Ringkasan pasar">
         <article><span>Available supply</span><strong>{number.format(totals.supply)}</strong><small>tCO₂e setelah reservation</small></article>
         <article><span>Available buy need</span><strong>{number.format(totals.demand)}</strong><small>tCO₂e kebutuhan tersisa</small></article>
         <article><span>Executed volume</span><strong>{number.format(marketData.statistics.volume)}</strong><small>{marketData.state === 'TRADING' ? `LTP ${priceOrDash(marketData.lastTradedPrice)}` : 'NO TRADES · LTP belum terbentuk'}</small></article>
@@ -331,33 +354,33 @@ export function MarketDashboardPage() {
 
       <FeedbackBanners error={error} notice={notice} />
 
-      <section className="panel orders-panel">
+      <section className="panel orders-panel anchor-section" id="ruleset">
         <div className="panel-heading compact"><div><p className="eyebrow">MARKET CONTROL</p><h2>Ruleset & session</h2></div><button className="ghost" disabled={busy} onClick={() => void createRulesetDraft()}>Clone active to draft</button></div>
         <div className="control-strip"><div><span>Session</span><strong>{marketSession?.status ?? '—'}</strong><small>{marketSession?.sessionId ?? 'loading'}</small></div><div className="control-actions">{marketSession?.status === 'OPEN' ? <><button disabled={busy} onClick={() => void sessionAction('halt')}>Halt</button><button className="cancel" disabled={busy} onClick={() => void sessionAction('close')}>Close</button></> : marketSession?.status === 'HALTED' ? <><button disabled={busy} onClick={() => void sessionAction('resume')}>Resume</button><button className="cancel" disabled={busy} onClick={() => void sessionAction('close')}>Close</button></> : <button disabled={busy} onClick={() => void sessionAction('open')}>Open</button>}</div></div>
         <div className="table-wrap"><table><thead><tr><th>Version</th><th>Status</th><th>Band</th><th>Tick / Lot</th><th>Sell cap</th><th>Finality</th><th></th></tr></thead><tbody>{rulesets.map((ruleset) => <tr key={ruleset.rulesetId}><td><strong>V{ruleset.version}</strong><small>{ruleset.rulesetId}</small></td><td><span className={`pill ${ruleset.status === 'ACTIVE' ? 'surplus' : ruleset.status === 'DRAFT' ? 'balanced' : ''}`}>{ruleset.status}</span></td><td>{money.format(ruleset.minimumPrice)}–{money.format(ruleset.maximumPrice)}</td><td>{number.format(ruleset.tickSize)} / {number.format(ruleset.lotSize)}</td><td>{ruleset.sellCapPercentage}%</td><td>{ruleset.settlementFinality}</td><td>{ruleset.status === 'DRAFT' ? <button className="cancel" disabled={busy} onClick={() => void rulesetAction(ruleset, 'approve')}>Approve</button> : ruleset.status === 'APPROVED' ? <button className="cancel" disabled={busy} onClick={() => void rulesetAction(ruleset, 'activate')}>Activate</button> : null}</td></tr>)}</tbody></table></div>
       </section>
 
       <section className="governance-grid">
-        <section className="panel orders-panel"><div className="panel-heading compact"><div><p className="eyebrow">DETERMINISTIC REPLAY</p><h2>Scenario runner</h2></div><button className="ghost" disabled={busy} onClick={() => void scenarioAction()}>{lastScenarioRun ? 'Replay last run' : 'Run golden scenario'}</button></div>{lastScenarioRun ? <div className="scenario-result"><strong>Run #{lastScenarioRun.runNumber}</strong><span>{lastScenarioRun.result.events.length} events</span><span>{lastScenarioRun.isDeterministicMatch === undefined ? 'Initial run' : lastScenarioRun.isDeterministicMatch ? 'Identical replay' : 'Mismatch'}</span><small>{lastScenarioRun.resultHash}</small></div> : <p className="empty">Belum ada scenario run pada sesi UI ini.</p>}</section>
-        <section className="panel orders-panel"><div className="panel-heading compact"><div><p className="eyebrow">SURVEILLANCE</p><h2>Open alerts</h2></div><span className="status">{alerts.length}</span></div><div className="mini-list">{alerts.length === 0 ? <p className="empty">Belum ada alert</p> : alerts.slice(-5).reverse().map((alert) => <div key={alert.alertId}><strong>{alert.alertType}</strong><span>{alert.severity}</span><small>{alert.description}</small></div>)}</div></section>
+        <section className="panel orders-panel anchor-section" id="scenario-lab"><div className="panel-heading compact"><div><p className="eyebrow">DETERMINISTIC REPLAY</p><h2>Scenario runner</h2></div><button className="ghost" disabled={busy} onClick={() => void scenarioAction()}>{lastScenarioRun ? 'Replay last run' : 'Run golden scenario'}</button></div>{lastScenarioRun ? <div className="scenario-result"><strong>Run #{lastScenarioRun.runNumber}</strong><span>{lastScenarioRun.result.events.length} events</span><span>{lastScenarioRun.isDeterministicMatch === undefined ? 'Initial run' : lastScenarioRun.isDeterministicMatch ? 'Identical replay' : 'Mismatch'}</span><small>{lastScenarioRun.resultHash}</small></div> : <p className="empty">Belum ada scenario run pada sesi UI ini.</p>}</section>
+        <section className="panel orders-panel anchor-section" id="surveillance"><div className="panel-heading compact"><div><p className="eyebrow">SURVEILLANCE</p><h2>Open alerts</h2></div><span className="status">{alerts.length}</span></div><div className="mini-list">{alerts.length === 0 ? <p className="empty">Belum ada alert</p> : alerts.slice(-5).reverse().map((alert) => <div key={alert.alertId}><strong>{alert.alertType}</strong><span>{alert.severity}</span><small>{alert.description}</small></div>)}</div></section>
       </section>
 
-      <section className="panel orders-panel">
+      <section className="panel orders-panel anchor-section" id="audit">
         <div className="panel-heading compact"><div><p className="eyebrow">IMMUTABLE EVENT TRAIL</p><h2>Audit events</h2></div><p>Actor, entity, correlation ID, dan urutan event tersimpan append-only.</p></div>
         <div className="table-wrap"><table><thead><tr><th>Seq</th><th>Event</th><th>Entity</th><th>Actor</th><th>Correlation</th><th>Time</th></tr></thead><tbody>{auditEvents.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada audit event</td></tr> : [...auditEvents].reverse().map((event) => <tr key={event.auditEventId}><td>#{event.eventSequence}</td><td>{event.eventType}</td><td>{event.entityType}</td><td>{event.actorId}</td><td><small>{event.correlationId}</small></td><td>{new Date(event.occurredAt).toLocaleTimeString('id-ID')}</td></tr>)}</tbody></table></div>
       </section>
 
-      <section className="panel orders-panel">
+      <section className="panel orders-panel anchor-section" id="market-data">
         <div className="panel-heading compact"><div><p className="eyebrow">MARKET DATA SNAPSHOT</p><h2>{marketData.state === 'TRADING' ? 'Live statistics' : 'No-trade state'}</h2></div><p>Reference price tetap terpisah dari LTP dan tidak digunakan untuk membuat trade sintetis.</p></div>
         <div className="table-wrap"><table><thead><tr><th>Reference</th><th>LTP</th><th>Best bid</th><th>Best ask</th><th>Spread</th><th>VWAP</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th></tr></thead><tbody><tr><td>{money.format(marketData.referencePrice)}</td><td>{priceOrDash(marketData.lastTradedPrice)}</td><td>{priceOrDash(marketData.topOfBook.bestBid?.price ?? null)}</td><td>{priceOrDash(marketData.topOfBook.bestAsk?.price ?? null)}</td><td>{priceOrDash(marketData.topOfBook.spread)}</td><td>{priceOrDash(marketData.statistics.vwap)}</td><td>{priceOrDash(marketData.statistics.open)}</td><td>{priceOrDash(marketData.statistics.high)}</td><td>{priceOrDash(marketData.statistics.low)}</td><td>{priceOrDash(marketData.statistics.close)}</td><td>{number.format(marketData.statistics.volume)}</td></tr></tbody></table></div>
       </section>
 
-      <section className="panel orders-panel">
+      <section className="panel orders-panel anchor-section" id="settlement">
         <div className="panel-heading compact"><div><p className="eyebrow">T+0 DVP · SRUK ADAPTER</p><h2>Settlement & reconciliation</h2></div><p>Holding dan posisi acknowledged baru berubah setelah kuantitas SRUK cocok.</p></div>
         <div className="table-wrap"><table><thead><tr><th>Trade</th><th>Buyer → Seller</th><th>Settlement</th><th>SRUK</th><th>Reconciliation</th><th>Attempt</th><th></th></tr></thead><tbody>{trades.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada trade untuk diselesaikan</td></tr> : [...trades].reverse().map((trade) => { const bundle = settlements.find((item) => item.settlement.tradeId === trade.tradeId); return <tr key={trade.tradeId}><td>#{trade.tradeSequence}<small>{number.format(trade.quantity)} tCO₂e</small></td><td>{trade.buyerParticipantId} → {trade.sellerParticipantId}</td><td><span className={`pill ${bundle?.settlement.status === 'FAILED' ? 'deficit' : bundle?.settlement.status === 'SETTLED' ? 'surplus' : 'balanced'}`}>{bundle?.settlement.status ?? 'NOT PREPARED'}</span></td><td>{bundle?.registryMessage.status ?? '—'}{bundle?.registryMessage.registryReference ? <small>{bundle.registryMessage.registryReference}</small> : null}</td><td>{bundle?.reconciliation.status ?? '—'}{bundle?.reconciliation.exceptionReason ? <small>{bundle.reconciliation.exceptionReason}</small> : null}</td><td>{bundle?.registryMessage.attemptCount ?? 0}</td><td><button className="cancel post-trade-action" disabled={busy || bundle?.finalized || bundle?.settlement.status === 'REVERSED'} onClick={() => void postTradeAction(trade, bundle)}>{nextPostTradeAction(bundle)}</button></td></tr>; })}</tbody></table></div>
       </section>
 
-      <section className="trading-grid">
+      <section className="trading-grid anchor-section">
         <form className="panel ticket" onSubmit={submitOrder}>
           <div className="panel-heading compact">
             <div><p className="eyebrow">ORDER ENTRY</p><h2>{orderType} ticket</h2></div>
@@ -385,22 +408,22 @@ export function MarketDashboardPage() {
         </section>
       </section>
 
-      <section className="panel orders-panel">
+      <section className="panel orders-panel anchor-section" id="trigger-book">
         <div className="panel-heading compact"><div><p className="eyebrow">NON-VISIBLE CONDITIONAL QUEUE</p><h2>Trigger book</h2></div><p>STOP menunggu LTP: BUY aktif saat LTP ≥ stop, SELL saat LTP ≤ stop.</p></div>
         <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Side</th><th>Stop price</th><th>Protection</th><th>Quantity</th><th>TIF</th><th></th></tr></thead><tbody>{triggerBook.entries.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada STOP pending</td></tr> : triggerBook.entries.map((order) => <tr key={order.orderId}><td>{order.participantId}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.stopPrice)}</td><td>{money.format(order.protectionPrice)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
       </section>
 
-      <section className="panel orders-panel">
+      <section className="panel orders-panel anchor-section" id="orders">
         <div className="panel-heading compact"><div><p className="eyebrow">PRICE–TIME QUEUE</p><h2>Open orders</h2></div><p>Hanya sisa order yang belum terisi yang tampil di antrean.</p></div>
         <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Side</th><th>Price</th><th>Remaining</th><th>TIF</th><th></th></tr></thead><tbody>{openOrders.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada order aktif</td></tr> : openOrders.map((order) => <tr key={order.orderId}><td>{order.participantId}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.limitPrice!)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
       </section>
 
-      <section className="panel orders-panel">
+      <section className="panel orders-panel anchor-section" id="trades">
         <div className="panel-heading compact"><div><p className="eyebrow">IMMUTABLE LEDGER</p><h2>Executed trades</h2></div><p>Harga eksekusi mengikuti harga resting order.</p></div>
         <div className="table-wrap"><table><thead><tr><th>Sequence</th><th>Buyer</th><th>Seller</th><th>Price</th><th>Quantity</th><th>Notional</th></tr></thead><tbody>{trades.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada trade</td></tr> : [...trades].reverse().map((trade) => <tr key={trade.tradeId}><td>#{trade.tradeSequence}</td><td>{trade.buyerParticipantId}</td><td>{trade.sellerParticipantId}</td><td>{money.format(trade.price)}</td><td>{number.format(trade.quantity)}</td><td>{money.format(trade.notional)}</td></tr>)}</tbody></table></div>
       </section>
 
-      <section className="panel positions-panel">
+      <section className="panel positions-panel anchor-section" id="positions">
         <div className="panel-heading"><div><p className="eyebrow">ANNUAL COMPLIANCE POSITION</p><h2>Posisi peserta</h2></div><label className="period-selector">Periode<select value={positionPeriod} onChange={(event) => setPositionPeriod(Number(event.target.value))}><option value={2024}>2024 · VERIFIED</option><option value={2025}>2025 · VERIFIED (UAT)</option><option value={2026}>2026 · PROVISIONAL</option><option value={2027}>2027 · ACTIVE MARKET</option></select></label></div>
         <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Provenance</th><th>Allocated</th><th>Emission</th><th>Net position</th><th>Executed pending</th><th>Acknowledged B/S</th><th>Available sell</th><th>Buy need</th></tr></thead><tbody>{positions.map((position) => <tr key={position.participantId}><td><strong>{position.participantName}</strong><small>{position.participantId}{position.businessType ? ` · ${position.businessType}` : ''}</small></td><td><span className={`pill ${position.sourceStatus === 'VERIFIED' ? 'surplus' : 'balanced'}`}>{position.sourceStatus}</span><small>{position.dataOrigin}{position.scaleClass ? ` · ${position.scaleClass}` : ''}</small></td><td>{number.format(position.allocatedQuota)}</td><td>{number.format(position.verifiedEmission)}</td><td><span className={`pill ${position.positionStatus.toLowerCase()}`}>{signed(position.netPosition)}</span></td><td>B {number.format(position.executedBuyPending)} / S {number.format(position.executedSellPending)}</td><td>{number.format(position.acknowledgedPurchases)} / {number.format(position.acknowledgedSales)}</td><td>{number.format(position.availableToSell)}</td><td>{number.format(position.availableBuyNeed)}</td></tr>)}</tbody></table></div>
       </section>
