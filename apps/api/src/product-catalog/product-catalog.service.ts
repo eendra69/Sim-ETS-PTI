@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleDestroy } from '@nestjs/common';
 import { Pool, QueryResultRow } from 'pg';
 import {
   catalogueAdmissions,
@@ -297,6 +297,68 @@ export class ProductCatalogService implements OnModuleDestroy {
     return result.rows.map((row) => this.mapHolding(row, filters.targetCompliancePeriod));
   }
 
+  async assertOrderContext(command: {
+    participantId: string;
+    installationId: string;
+    seriesCode: string;
+    vintageYear: number;
+    targetCompliancePeriod: number;
+    side: 'BUY' | 'SELL';
+    quantity: number;
+  }): Promise<void> {
+    const installation = (await this.listInstallations(command.participantId)).find(
+      (item) => item.installationId === command.installationId,
+    );
+    if (!installation) {
+      throw new BadRequestException({
+        code: 'CAT-INSTALLATION-SCOPE',
+        message: 'Installation does not belong to the order participant',
+      });
+    }
+    if (installation.status !== 'ACTIVE') {
+      throw new BadRequestException({
+        code: 'CAT-INSTALLATION-INACTIVE',
+        message: 'Installation is not active for market orders',
+      });
+    }
+
+    const vintage = (await this.listVintages(command.seriesCode, command.targetCompliancePeriod))
+      .find((item) => item.vintageYear === command.vintageYear);
+    if (!vintage || vintage.status !== 'ACTIVE' || vintage.admission?.status !== 'ACTIVE') {
+      throw new BadRequestException({
+        code: 'CAT-VINTAGE-NOT-ADMITTED',
+        message: 'Vintage is not admitted to the Regular Market',
+      });
+    }
+    if (!vintage.eligibility?.eligible) {
+      throw new BadRequestException({
+        code: 'CAT-VINTAGE-INELIGIBLE',
+        message: `Vintage ${command.vintageYear} is not eligible for CP-${command.targetCompliancePeriod}`,
+      });
+    }
+
+    if (command.side === 'SELL') {
+      const holdings = await this.listHoldings({
+        participantId: command.participantId,
+        installationId: command.installationId,
+        seriesCode: command.seriesCode,
+        vintageYear: command.vintageYear,
+        targetCompliancePeriod: command.targetCompliancePeriod,
+      });
+      const tradableAvailable = holdings.reduce(
+        (total, holding) => total + holding.tradableAvailableUnits,
+        0,
+      );
+      if (command.quantity > tradableAvailable) {
+        throw new BadRequestException({
+          code: 'CAT-INSUFFICIENT-VINTAGE-HOLDING',
+          message: 'Verified tradable holding is insufficient for this vintage and installation',
+          tradableAvailable,
+        });
+      }
+    }
+  }
+
   private decorateMemoryVintage(item: QuotaVintage, target?: number): QuotaVintage {
     const admission = catalogueAdmissions.find((candidate) =>
       candidate.seriesCode === item.seriesCode && candidate.vintageYear === item.vintageYear);
@@ -483,4 +545,3 @@ export class ProductCatalogService implements OnModuleDestroy {
     return parsed;
   }
 }
-

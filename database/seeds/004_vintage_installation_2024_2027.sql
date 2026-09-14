@@ -40,6 +40,7 @@ INSERT INTO vintage_eligibility_rules (
 ) VALUES
   ('ADM-PTBAE-IND-V2024-REG', 'PTBAE-IND', 2024, 2026, true, 3, 'Banked vintage accepted for CP-2026 in the simulator', 'CARRYOVER_SIMULATION', 'SIMULATION_ASSUMPTION'),
   ('ADM-PTBAE-IND-V2024-REG', 'PTBAE-IND', 2024, 2027, true, 3, 'Banked vintage accepted for CP-2027 in the simulator', 'CARRYOVER_SIMULATION', 'SIMULATION_ASSUMPTION'),
+  ('ADM-PTBAE-IND-V2025-REG', 'PTBAE-IND', 2025, 2025, true, 1, 'Current-year vintage accepted for CP-2025 UAT simulation', 'SYNTHETIC_UAT_2025', 'SIMULATION_ASSUMPTION'),
   ('ADM-PTBAE-IND-V2025-REG', 'PTBAE-IND', 2025, 2027, true, 2, 'Banked vintage accepted for CP-2027 in the simulator', 'CARRYOVER_SIMULATION', 'SIMULATION_ASSUMPTION'),
   ('ADM-PTBAE-IND-V2026-REG', 'PTBAE-IND', 2026, 2026, true, 1, 'Current-year vintage accepted for CP-2026 in the simulator', 'CURRENT_2026_SIMULATION', 'SIMULATION_ASSUMPTION'),
   ('ADM-PTBAE-IND-V2026-REG', 'PTBAE-IND', 2026, 2027, true, 1, 'Vintage accepted for CP-2027 in the simulator', 'CURRENT_2026_SIMULATION', 'SIMULATION_ASSUMPTION'),

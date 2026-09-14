@@ -14,6 +14,7 @@ export interface TradeStatistics {
 export interface MarketDataSnapshot {
   seriesCode: string;
   compliancePeriod: number;
+  vintageYear?: number;
   sessionId: string;
   rulesetId: string;
   state: 'NO_TRADES' | 'TRADING';
@@ -57,6 +58,7 @@ export interface ReplayPoint {
 export interface MarketDataReplay {
   seriesCode: string;
   compliancePeriod: number;
+  vintageYear?: number;
   sessionId: string;
   points: ReplayPoint[];
   finalStatistics: TradeStatistics;

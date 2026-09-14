@@ -20,6 +20,7 @@ export class MarketDataController {
       query.compliancePeriod,
       query.fromTradeSequence,
       query.toTradeSequence,
+      query.vintageYear,
     );
   }
 
@@ -30,6 +31,7 @@ export class MarketDataController {
       query.compliancePeriod,
       query.afterTradeSequence,
       query.limit,
+      query.vintageYear,
     );
   }
 
@@ -40,6 +42,7 @@ export class MarketDataController {
       query.compliancePeriod,
       query.fromTradeSequence,
       query.toTradeSequence,
+      query.vintageYear,
     );
   }
 }

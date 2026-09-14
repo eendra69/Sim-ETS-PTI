@@ -15,6 +15,8 @@ export interface LimitOrder {
   participantId: string;
   clientOrderId: string;
   seriesCode: string;
+  installationId: string;
+  vintageYear: number;
   compliancePeriod: number;
   side: OrderSide;
   orderType: ExecutableOrderType;
@@ -47,6 +49,8 @@ export interface StopOrder {
   participantId: string;
   clientOrderId: string;
   seriesCode: string;
+  installationId: string;
+  vintageYear: number;
   compliancePeriod: number;
   side: OrderSide;
   orderType: 'STOP';
@@ -87,6 +91,7 @@ export interface TriggerEvent {
 export interface TriggerBookSnapshot {
   seriesCode: string;
   compliancePeriod: number;
+  vintageYear?: number;
   entries: StopOrder[];
   generatedAt: string;
 }
@@ -100,6 +105,7 @@ export interface OrderBookLevel {
 export interface OrderBookSnapshot {
   seriesCode: string;
   compliancePeriod: number;
+  vintageYear?: number;
   bids: OrderBookLevel[];
   asks: OrderBookLevel[];
   orders: {
@@ -160,7 +166,10 @@ export interface Trade {
   sellerOrderId: string;
   buyerParticipantId: string;
   sellerParticipantId: string;
+  buyerInstallationId: string;
+  sellerInstallationId: string;
   seriesCode: string;
+  vintageYear: number;
   compliancePeriod: number;
   quantity: number;
   price: number;

@@ -63,5 +63,50 @@ describe('ProductCatalogService', () => {
       }),
     ]);
   });
-});
 
+  it('accepts an order context only when installation, eligibility, and vintage holding align', async () => {
+    await expect(service.assertOrderContext({
+      participantId: 'IND-A',
+      installationId: 'INST-A-01',
+      seriesCode: 'PTBAE-IND',
+      vintageYear: 2024,
+      targetCompliancePeriod: 2027,
+      side: 'SELL',
+      quantity: 10_000,
+    })).resolves.toBeUndefined();
+
+    await expect(service.assertOrderContext({
+      participantId: 'IND-A',
+      installationId: 'INST-B-01',
+      seriesCode: 'PTBAE-IND',
+      vintageYear: 2024,
+      targetCompliancePeriod: 2027,
+      side: 'SELL',
+      quantity: 10_000,
+    })).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CAT-INSTALLATION-SCOPE' }) });
+
+    await expect(service.assertOrderContext({
+      participantId: 'IND-A',
+      installationId: 'INST-A-01',
+      seriesCode: 'PTBAE-IND',
+      vintageYear: 2025,
+      targetCompliancePeriod: 2026,
+      side: 'BUY',
+      quantity: 10_000,
+    })).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CAT-VINTAGE-INELIGIBLE' }) });
+  });
+
+  it('rejects a sell order that exceeds the verified holding for its exact vintage', async () => {
+    await expect(service.assertOrderContext({
+      participantId: 'IND-A',
+      installationId: 'INST-A-01',
+      seriesCode: 'PTBAE-IND',
+      vintageYear: 2024,
+      targetCompliancePeriod: 2027,
+      side: 'SELL',
+      quantity: 30_001,
+    })).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'CAT-INSUFFICIENT-VINTAGE-HOLDING' }),
+    });
+  });
+});

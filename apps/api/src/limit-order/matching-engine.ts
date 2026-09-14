@@ -14,6 +14,7 @@ export function planMatches(incoming: LimitOrder, availableOrders: LimitOrder[])
         candidate.participantId !== incoming.participantId &&
         candidate.seriesCode === incoming.seriesCode &&
         candidate.compliancePeriod === incoming.compliancePeriod &&
+        candidate.vintageYear === incoming.vintageYear &&
         candidate.side !== incoming.side &&
         candidate.orderType === 'LIMIT' &&
         isActive(candidate) &&

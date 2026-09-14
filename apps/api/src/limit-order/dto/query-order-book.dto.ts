@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsString, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class QueryOrderBookDto {
   @IsString()
@@ -9,4 +9,10 @@ export class QueryOrderBookDto {
   @IsInt()
   @Min(2000)
   compliancePeriod!: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2000)
+  vintageYear?: number;
 }

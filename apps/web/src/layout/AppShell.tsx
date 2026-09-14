@@ -8,6 +8,7 @@ interface AppShellProps {
   installationId?: string;
   positionPeriod: number;
   targetCompliancePeriod: number;
+  vintageYear?: number;
   sessionStatus?: 'OPEN' | 'HALTED' | 'CLOSED';
   referencePrice: number;
   lastTradedPrice: number | null;
@@ -61,6 +62,7 @@ export function AppShell({
   installationId,
   positionPeriod,
   targetCompliancePeriod,
+  vintageYear,
   sessionStatus,
   referencePrice,
   lastTradedPrice,
@@ -132,7 +134,7 @@ export function AppShell({
           </div>
           <div className="strip-group">
             <span className="shell-chip shell-chip--blue">PTBAE-IND</span>
-            <span className="shell-chip shell-chip--warning" title="Vintage belum menjadi atribut order pada tahap ini">Vintage belum diterapkan</span>
+            <span className="shell-chip shell-chip--blue">{vintageYear ? `Vintage ${vintageYear}` : 'Vintage —'}</span>
             <span className="shell-chip">Target CP-{targetCompliancePeriod}</span>
             <span className="shell-chip">tCO₂e</span>
           </div>

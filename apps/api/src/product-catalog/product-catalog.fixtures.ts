@@ -76,6 +76,7 @@ function eligibility(
 export const catalogueEligibility: VintageEligibility[] = [
   eligibility(2024, 2026, 3),
   eligibility(2024, 2027, 3),
+  eligibility(2025, 2025, 1),
   eligibility(2025, 2027, 2),
   eligibility(2026, 2026, 1),
   eligibility(2026, 2027, 1),
@@ -125,4 +126,3 @@ export const catalogueHoldings: VintageHolding[] = [
   sourceReference: `DEMO-VINTAGE-${vintageYear}`,
   version: 1,
 }));
-

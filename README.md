@@ -109,7 +109,21 @@ Endpoint baca katalog:
 - `GET /api/v1/trader-installation-scopes?participantId=IND-D`
 - `GET /api/v1/vintage-holdings?participantId=IND-D&seriesCode=PTBAE-IND&targetCompliancePeriod=2027`
 
-Kontrak order/trade lama masih menggunakan `compliancePeriod` untuk menjaga kompatibilitas. Propagasi `vintageYear` dan installation lineage ke matching serta settlement dilakukan pada lapisan implementasi berikutnya; UI baru belum boleh menganggap tahun periode sebagai vintage secara implisit.
+Order baru wajib menyebut `installationId`, `vintageYear`, dan `compliancePeriod`. Server memvalidasi bahwa instalasi milik peserta, vintage admitted dan eligible untuk periode tujuan, serta SELL memiliki holding verified yang cukup. Order book, trigger book, matching, market data, trade, dan settlement dipartisi atau dapat difilter berdasarkan vintage; cross-vintage matching tidak diizinkan.
+
+Contoh konteks order:
+
+```json
+{
+  "participantId": "IND-A",
+  "installationId": "INST-A-01",
+  "seriesCode": "PTBAE-IND",
+  "vintageYear": 2024,
+  "compliancePeriod": 2027
+}
+```
+
+Trade dan settlement menyimpan `buyerInstallationId`, `sellerInstallationId`, dan `vintageYear` agar lineage unit tetap dapat ditelusuri sampai rekonsiliasi SRUK. Endpoint order book, trigger book, trade, market data, dan settlement menerima filter opsional `vintageYear`.
 
 ## Struktur frontend
 

@@ -10,6 +10,7 @@ import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { KeyedMutex } from '../common/keyed-mutex';
 import { GovernanceService } from '../governance/governance.service';
 import { PositionBalanceService } from '../position-balance/position-balance.service';
+import { ProductCatalogService } from '../product-catalog/product-catalog.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import {
   LimitOrder,
@@ -35,6 +36,8 @@ interface LimitOrderRow extends QueryResultRow {
   participant_id: string;
   client_order_id: string;
   series_code: string;
+  installation_id: string;
+  vintage_year: number;
   compliance_period: number;
   side: OrderSide;
   order_type: ExecutableOrderType;
@@ -60,6 +63,8 @@ interface StopOrderRow extends QueryResultRow {
   participant_id: string;
   client_order_id: string;
   series_code: string;
+  installation_id: string;
+  vintage_year: number;
   compliance_period: number;
   side: OrderSide;
   ruleset_id: string;
@@ -110,7 +115,10 @@ interface TradeRow extends QueryResultRow {
   seller_order_id: string;
   buyer_participant_id: string;
   seller_participant_id: string;
+  buyer_installation_id: string;
+  seller_installation_id: string;
   series_code: string;
+  vintage_year: number;
   compliance_period: number;
   quantity: string;
   price: string;
@@ -148,12 +156,15 @@ export class LimitOrderService implements OnModuleDestroy {
   private nextPrioritySequence = 1;
   private nextTradeSequence = 1;
   private readonly governanceService: GovernanceService;
+  private readonly productCatalogService?: ProductCatalogService;
 
   constructor(
     private readonly positionBalanceService: PositionBalanceService,
     @Optional() governanceService?: GovernanceService,
+    @Optional() productCatalogService?: ProductCatalogService,
   ) {
     this.governanceService = governanceService ?? new GovernanceService();
+    this.productCatalogService = productCatalogService;
     const usePostgres =
       process.env.NODE_ENV !== 'test' && process.env.PERSISTENCE_MODE === 'postgres';
     if (usePostgres) {
@@ -189,6 +200,15 @@ export class LimitOrderService implements OnModuleDestroy {
           dto.compliancePeriod,
         );
         this.governanceService.assertOrderEntryOpen(dto.seriesCode, dto.compliancePeriod);
+        await this.productCatalogService?.assertOrderContext({
+          participantId: dto.participantId,
+          installationId: dto.installationId,
+          seriesCode: dto.seriesCode,
+          vintageYear: dto.vintageYear,
+          targetCompliancePeriod: dto.compliancePeriod,
+          side: dto.side,
+          quantity: dto.quantity,
+        });
         const reservationPrice = this.validateOrderCommand(dto);
         validateAgainstRuleset(
           dto.seriesCode,
@@ -298,13 +318,14 @@ export class LimitOrderService implements OnModuleDestroy {
     return this.mapOrder(result.rows[0]);
   }
 
-  async listOrders(seriesCode: string, compliancePeriod: number): Promise<Order[]> {
-    const stopOrders = await this.listStopOrders(seriesCode, compliancePeriod, false);
+  async listOrders(seriesCode: string, compliancePeriod: number, vintageYear?: number): Promise<Order[]> {
+    const stopOrders = await this.listStopOrders(seriesCode, compliancePeriod, false, vintageYear);
     if (!this.pool) {
       return [...this.orders.values(), ...stopOrders]
         .filter(
           (order) =>
-            order.seriesCode === seriesCode && order.compliancePeriod === compliancePeriod,
+            order.seriesCode === seriesCode && order.compliancePeriod === compliancePeriod &&
+            (vintageYear === undefined || order.vintageYear === vintageYear),
         )
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
         .map((order) => ({ ...order }));
@@ -312,20 +333,22 @@ export class LimitOrderService implements OnModuleDestroy {
     const result = await this.pool.query<LimitOrderRow>(
       `SELECT * FROM limit_orders
        WHERE series_code = $1 AND compliance_period = $2
+         AND ($3::integer IS NULL OR vintage_year = $3)
        ORDER BY priority_sequence`,
-      [seriesCode, compliancePeriod],
+      [seriesCode, compliancePeriod, vintageYear ?? null],
     );
     return [...result.rows.map((row) => this.mapOrder(row)), ...stopOrders].sort((left, right) =>
       left.createdAt.localeCompare(right.createdAt),
     );
   }
 
-  async listTrades(seriesCode: string, compliancePeriod: number): Promise<Trade[]> {
+  async listTrades(seriesCode: string, compliancePeriod: number, vintageYear?: number): Promise<Trade[]> {
     if (!this.pool) {
       return [...this.trades.values()]
         .filter(
           (trade) =>
-            trade.seriesCode === seriesCode && trade.compliancePeriod === compliancePeriod,
+            trade.seriesCode === seriesCode && trade.compliancePeriod === compliancePeriod &&
+            (vintageYear === undefined || trade.vintageYear === vintageYear),
         )
         .sort((left, right) => left.tradeSequence - right.tradeSequence)
         .map((trade) => ({ ...trade, legs: trade.legs.map((leg) => ({ ...leg })) }));
@@ -333,8 +356,9 @@ export class LimitOrderService implements OnModuleDestroy {
     const result = await this.pool.query<TradeRow>(
       `SELECT * FROM trades
        WHERE series_code = $1 AND compliance_period = $2
+         AND ($3::integer IS NULL OR vintage_year = $3)
        ORDER BY trade_sequence`,
-      [seriesCode, compliancePeriod],
+      [seriesCode, compliancePeriod, vintageYear ?? null],
     );
     const legsByTrade = await this.listDbTradeLegs(result.rows.map((row) => row.trade_id));
     return result.rows.map((row) => this.mapTrade(row, legsByTrade.get(row.trade_id) ?? []));
@@ -367,7 +391,7 @@ export class LimitOrderService implements OnModuleDestroy {
       return { order, generatedTrades: [] };
     }
     await this.detectPotentialSelfMatch(order);
-    const marketKey = `market:${order.seriesCode}:${order.compliancePeriod}`;
+    const marketKey = `market:${order.seriesCode}:${order.compliancePeriod}:${order.vintageYear}`;
     return this.mutex.runExclusive(marketKey, () =>
       this.pool ? this.executeDbMatches(orderId, marketKey) : this.executeMemoryMatches(orderId),
     );
@@ -391,11 +415,11 @@ export class LimitOrderService implements OnModuleDestroy {
     return result;
   }
 
-  async expireDayOrders(seriesCode: string, compliancePeriod: number): Promise<Order[]> {
-    const candidates = (await this.listOpenOrders(seriesCode, compliancePeriod)).filter(
+  async expireDayOrders(seriesCode: string, compliancePeriod: number, vintageYear?: number): Promise<Order[]> {
+    const candidates = (await this.listOpenOrders(seriesCode, compliancePeriod, vintageYear)).filter(
       (order) => order.timeInForce === 'DAY',
     );
-    const stopCandidates = (await this.listStopOrders(seriesCode, compliancePeriod, true)).filter(
+    const stopCandidates = (await this.listStopOrders(seriesCode, compliancePeriod, true, vintageYear)).filter(
       (order) => order.timeInForce === 'DAY',
     );
     const expired: Order[] = [];
@@ -411,10 +435,11 @@ export class LimitOrderService implements OnModuleDestroy {
   async getOrderBook(
     seriesCode: string,
     compliancePeriod: number,
+    vintageYear?: number,
   ): Promise<OrderBookSnapshot> {
     const ruleset = await this.governanceService.getActiveRuleset(seriesCode, compliancePeriod);
     validateAgainstRuleset(seriesCode, compliancePeriod, ruleset.lotSize, ruleset.minimumPrice, ruleset);
-    const open = await this.listOpenOrders(seriesCode, compliancePeriod);
+    const open = await this.listOpenOrders(seriesCode, compliancePeriod, vintageYear);
     const bids = open
       .filter((order) => order.side === 'BUY')
       .sort(
@@ -431,6 +456,7 @@ export class LimitOrderService implements OnModuleDestroy {
     return {
       seriesCode,
       compliancePeriod,
+      ...(vintageYear !== undefined ? { vintageYear } : {}),
       bids: this.aggregateLevels(bids),
       asks: this.aggregateLevels(asks),
       orders: { bids, asks },
@@ -441,13 +467,15 @@ export class LimitOrderService implements OnModuleDestroy {
   async getTriggerBook(
     seriesCode: string,
     compliancePeriod: number,
+    vintageYear?: number,
   ): Promise<TriggerBookSnapshot> {
     const ruleset = await this.governanceService.getActiveRuleset(seriesCode, compliancePeriod);
     validateAgainstRuleset(seriesCode, compliancePeriod, ruleset.lotSize, ruleset.minimumPrice, ruleset);
     return {
       seriesCode,
       compliancePeriod,
-      entries: await this.listStopOrders(seriesCode, compliancePeriod, true),
+      ...(vintageYear !== undefined ? { vintageYear } : {}),
+      entries: await this.listStopOrders(seriesCode, compliancePeriod, true, vintageYear),
       generatedAt: new Date().toISOString(),
     };
   }
@@ -455,12 +483,14 @@ export class LimitOrderService implements OnModuleDestroy {
   async listTriggerEvents(
     seriesCode: string,
     compliancePeriod: number,
+    vintageYear?: number,
   ): Promise<TriggerEvent[]> {
     if (!this.pool) {
       return [...this.triggerEvents.values()]
         .filter((event) => {
           const stop = this.stopOrders.get(event.stopOrderId);
-          return stop?.seriesCode === seriesCode && stop.compliancePeriod === compliancePeriod;
+          return stop?.seriesCode === seriesCode && stop.compliancePeriod === compliancePeriod &&
+            (vintageYear === undefined || stop.vintageYear === vintageYear);
         })
         .sort((left, right) => left.triggeredAt.localeCompare(right.triggeredAt))
         .map((event) => this.withMemoryActivatedTradeIds(event));
@@ -469,8 +499,9 @@ export class LimitOrderService implements OnModuleDestroy {
       `SELECT te.* FROM trigger_events te
        JOIN stop_orders stop ON stop.stop_order_id = te.stop_order_id
        WHERE stop.series_code = $1 AND stop.compliance_period = $2
+         AND ($3::integer IS NULL OR stop.vintage_year = $3)
        ORDER BY te.triggered_at, te.trigger_event_id`,
-      [seriesCode, compliancePeriod],
+      [seriesCode, compliancePeriod, vintageYear ?? null],
     );
     return Promise.all(result.rows.map((row) => this.mapDbTriggerEvent(row)));
   }
@@ -529,7 +560,7 @@ export class LimitOrderService implements OnModuleDestroy {
   }
 
   private async activateStopsForTrade(sourceTrade: Trade): Promise<TriggerActivation[]> {
-    const marketKey = `market:${sourceTrade.seriesCode}:${sourceTrade.compliancePeriod}`;
+    const marketKey = `market:${sourceTrade.seriesCode}:${sourceTrade.compliancePeriod}:${sourceTrade.vintageYear}`;
     return this.mutex.runExclusive(marketKey, () =>
       this.pool
         ? this.activateDbStopsForTrade(sourceTrade, marketKey)
@@ -543,6 +574,7 @@ export class LimitOrderService implements OnModuleDestroy {
         (stop) =>
           stop.seriesCode === sourceTrade.seriesCode &&
           stop.compliancePeriod === sourceTrade.compliancePeriod &&
+          stop.vintageYear === sourceTrade.vintageYear &&
           stop.status === 'TRIGGER_PENDING' &&
           this.isStopTriggered(stop, sourceTrade.price),
       )
@@ -591,26 +623,31 @@ export class LimitOrderService implements OnModuleDestroy {
         `SELECT * FROM stop_orders
          WHERE series_code = $1
            AND compliance_period = $2
+           AND vintage_year = $3
            AND status = 'TRIGGER_PENDING'
-           AND ((side = 'BUY' AND stop_price <= $3) OR (side = 'SELL' AND stop_price >= $3))
+           AND ((side = 'BUY' AND stop_price <= $4) OR (side = 'SELL' AND stop_price >= $4))
          ORDER BY priority_sequence
          FOR UPDATE`,
-        [sourceTrade.seriesCode, sourceTrade.compliancePeriod, sourceTrade.price],
+        [sourceTrade.seriesCode, sourceTrade.compliancePeriod, sourceTrade.vintageYear, sourceTrade.price],
       );
       const activations: TriggerActivation[] = [];
       for (const row of candidates.rows) {
         const stop = this.mapStopOrder(row);
         const activatedResult = await client.query<LimitOrderRow>(
           `INSERT INTO limit_orders (
-             participant_id, client_order_id, series_code, compliance_period, side, order_type,
+             participant_id, client_order_id, series_code, installation_id, vintage_year,
+             compliance_period, side, order_type,
              ruleset_id, quantity, remaining_quantity, limit_price, protection_price,
              time_in_force, status, reservation_id, parent_stop_order_id, correlation_id, causation_id
-           ) VALUES ($1, $2, $3, $4, $5, 'MARKET', $6, $7, $7, NULL, $8, 'IOC', 'OPEN', $9, $10, $11, $12)
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'MARKET', $8, $9, $9, NULL, $10,
+             'IOC', 'OPEN', $11, $12, $13, $14)
            RETURNING *`,
           [
             stop.participantId,
             this.activationClientOrderId(stop),
             stop.seriesCode,
+            stop.installationId,
+            stop.vintageYear,
             stop.compliancePeriod,
             stop.side,
             stop.rulesetId,
@@ -694,7 +731,10 @@ export class LimitOrderService implements OnModuleDestroy {
         sellerOrderId: seller.orderId,
         buyerParticipantId: buyer.participantId,
         sellerParticipantId: seller.participantId,
+        buyerInstallationId: buyer.installationId,
+        sellerInstallationId: seller.installationId,
         seriesCode: incoming.seriesCode,
+        vintageYear: incoming.vintageYear,
         compliancePeriod: incoming.compliancePeriod,
         quantity,
         price: plan.price,
@@ -747,17 +787,19 @@ export class LimitOrderService implements OnModuleDestroy {
         `SELECT * FROM limit_orders
          WHERE series_code = $1
            AND compliance_period = $2
-           AND side = $3
+           AND vintage_year = $3
+           AND side = $4
            AND order_type = 'LIMIT'
            AND status IN ('OPEN', 'PARTIALLY_FILLED')
-           AND participant_id <> $4
-           AND limit_price ${priceOperator} $5
-           AND order_id <> $6
+           AND participant_id <> $5
+           AND limit_price ${priceOperator} $6
+           AND order_id <> $7
          ORDER BY limit_price ${priceDirection}, priority_sequence ASC
          FOR UPDATE`,
         [
           incoming.seriesCode,
           incoming.compliancePeriod,
+          incoming.vintageYear,
           incoming.side === 'BUY' ? 'SELL' : 'BUY',
           incoming.participantId,
           this.executionBoundary(incoming),
@@ -776,10 +818,11 @@ export class LimitOrderService implements OnModuleDestroy {
 
       const matchEvent = await client.query<{ match_event_id: string } & QueryResultRow>(
         `INSERT INTO match_events (
-           incoming_order_id, series_code, compliance_period, ruleset_id, correlation_id
-         ) VALUES ($1, $2, $3, $4, $5)
+           incoming_order_id, series_code, compliance_period, vintage_year, ruleset_id, correlation_id
+         ) VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING match_event_id`,
-        [incoming.orderId, incoming.seriesCode, incoming.compliancePeriod, incoming.rulesetId, incoming.correlationId],
+        [incoming.orderId, incoming.seriesCode, incoming.compliancePeriod, incoming.vintageYear,
+          incoming.rulesetId, incoming.correlationId],
       );
       const matchEventId = matchEvent.rows[0]!.match_event_id;
       const generatedTrades: Trade[] = [];
@@ -812,9 +855,10 @@ export class LimitOrderService implements OnModuleDestroy {
           `INSERT INTO trades (
              match_event_id, buyer_order_id, seller_order_id,
              buyer_participant_id, seller_participant_id,
-             series_code, compliance_period, quantity, price, notional, ruleset_id,
+             buyer_installation_id, seller_installation_id,
+             series_code, vintage_year, compliance_period, quantity, price, notional, ruleset_id,
              correlation_id, causation_id
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
            RETURNING *`,
           [
             matchEventId,
@@ -822,7 +866,10 @@ export class LimitOrderService implements OnModuleDestroy {
             seller.orderId,
             buyer.participantId,
             seller.participantId,
+            buyer.installationId,
+            seller.installationId,
             incoming.seriesCode,
+            incoming.vintageYear,
             incoming.compliancePeriod,
             quantity,
             plan.price,
@@ -948,7 +995,7 @@ export class LimitOrderService implements OnModuleDestroy {
     targetStatus: Extract<LimitOrderStatus, 'CANCELLED' | 'EXPIRED'>,
   ): Promise<LimitOrder> {
     const initial = await this.getExecutableOrder(orderId);
-    const marketKey = `market:${initial.seriesCode}:${initial.compliancePeriod}`;
+    const marketKey = `market:${initial.seriesCode}:${initial.compliancePeriod}:${initial.vintageYear}`;
     return this.mutex.runExclusive(marketKey, async () => {
       if (this.pool) return this.closeDbOrder(orderId, targetStatus, marketKey);
       const current = await this.getExecutableOrder(orderId);
@@ -969,7 +1016,7 @@ export class LimitOrderService implements OnModuleDestroy {
     initial: StopOrder,
     targetStatus: Extract<StopOrderStatus, 'CANCELLED' | 'EXPIRED'>,
   ): Promise<StopOrder> {
-    const marketKey = `market:${initial.seriesCode}:${initial.compliancePeriod}`;
+    const marketKey = `market:${initial.seriesCode}:${initial.compliancePeriod}:${initial.vintageYear}`;
     return this.mutex.runExclusive(marketKey, async () => {
       if (!this.pool) {
         const current = this.stopOrders.get(initial.orderId)!;
@@ -1033,6 +1080,8 @@ export class LimitOrderService implements OnModuleDestroy {
         participantId: dto.participantId,
         clientOrderId: dto.clientOrderId,
         seriesCode: dto.seriesCode,
+        installationId: dto.installationId,
+        vintageYear: dto.vintageYear,
         compliancePeriod: dto.compliancePeriod,
         side: dto.side,
         orderType: 'STOP',
@@ -1058,16 +1107,19 @@ export class LimitOrderService implements OnModuleDestroy {
 
     const result = await this.pool.query<StopOrderRow>(
       `INSERT INTO stop_orders (
-         participant_id, client_order_id, series_code, compliance_period, side, ruleset_id,
+         participant_id, client_order_id, series_code, installation_id, vintage_year,
+         compliance_period, side, ruleset_id,
          quantity, remaining_quantity, stop_price, protection_price, trigger_basis,
          activation_type, time_in_force, status, reservation_id, correlation_id, causation_id
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, 'LTP', 'MARKET', $10,
-         'TRIGGER_PENDING', $11, $12, $13)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, 'LTP', 'MARKET', $12,
+         'TRIGGER_PENDING', $13, $14, $15)
        RETURNING *`,
       [
         dto.participantId,
         dto.clientOrderId,
         dto.seriesCode,
+        dto.installationId,
+        dto.vintageYear,
         dto.compliancePeriod,
         dto.side,
         ruleset.rulesetId,
@@ -1135,6 +1187,8 @@ export class LimitOrderService implements OnModuleDestroy {
         participantId: dto.participantId,
         clientOrderId: dto.clientOrderId,
         seriesCode: dto.seriesCode,
+        installationId: dto.installationId,
+        vintageYear: dto.vintageYear,
         compliancePeriod: dto.compliancePeriod,
         side: dto.side,
         orderType: dto.orderType,
@@ -1160,15 +1214,19 @@ export class LimitOrderService implements OnModuleDestroy {
 
     const result = await this.pool.query<LimitOrderRow>(
       `INSERT INTO limit_orders (
-         participant_id, client_order_id, series_code, compliance_period, side, order_type,
+         participant_id, client_order_id, series_code, installation_id, vintage_year,
+         compliance_period, side, order_type,
          ruleset_id, quantity, remaining_quantity, limit_price, protection_price,
          time_in_force, status, reservation_id, correlation_id, causation_id
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, 'OPEN', $12, $13, $14)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12, $13,
+         'OPEN', $14, $15, $16)
        RETURNING *`,
       [
         dto.participantId,
         dto.clientOrderId,
         dto.seriesCode,
+        dto.installationId,
+        dto.vintageYear,
         dto.compliancePeriod,
         dto.side,
         dto.orderType,
@@ -1247,6 +1305,7 @@ export class LimitOrderService implements OnModuleDestroy {
     seriesCode: string,
     compliancePeriod: number,
     pendingOnly: boolean,
+    vintageYear?: number,
   ): Promise<StopOrder[]> {
     if (!this.pool) {
       return [...this.stopOrders.values()]
@@ -1254,6 +1313,7 @@ export class LimitOrderService implements OnModuleDestroy {
           (order) =>
             order.seriesCode === seriesCode &&
             order.compliancePeriod === compliancePeriod &&
+            (vintageYear === undefined || order.vintageYear === vintageYear) &&
             (!pendingOnly || order.status === 'TRIGGER_PENDING'),
         )
         .sort((left, right) => left.prioritySequence - right.prioritySequence)
@@ -1264,9 +1324,10 @@ export class LimitOrderService implements OnModuleDestroy {
        FROM stop_orders stop
        LEFT JOIN trigger_events event ON event.stop_order_id = stop.stop_order_id
        WHERE stop.series_code = $1 AND stop.compliance_period = $2
+         AND ($3::integer IS NULL OR stop.vintage_year = $3)
          ${pendingOnly ? "AND stop.status = 'TRIGGER_PENDING'" : ''}
        ORDER BY stop.priority_sequence`,
-      [seriesCode, compliancePeriod],
+      [seriesCode, compliancePeriod, vintageYear ?? null],
     );
     return result.rows.map((row) => this.mapStopOrder(row));
   }
@@ -1274,6 +1335,7 @@ export class LimitOrderService implements OnModuleDestroy {
   private async listOpenOrders(
     seriesCode: string,
     compliancePeriod: number,
+    vintageYear?: number,
   ): Promise<LimitOrder[]> {
     if (!this.pool) {
       return [...this.orders.values()]
@@ -1281,6 +1343,7 @@ export class LimitOrderService implements OnModuleDestroy {
           (order) =>
             order.seriesCode === seriesCode &&
             order.compliancePeriod === compliancePeriod &&
+            (vintageYear === undefined || order.vintageYear === vintageYear) &&
             order.orderType === 'LIMIT' &&
             isActive(order),
         )
@@ -1290,9 +1353,10 @@ export class LimitOrderService implements OnModuleDestroy {
       `SELECT * FROM limit_orders
        WHERE series_code = $1
          AND compliance_period = $2
+         AND ($3::integer IS NULL OR vintage_year = $3)
          AND order_type = 'LIMIT'
          AND status IN ('OPEN', 'PARTIALLY_FILLED')`,
-      [seriesCode, compliancePeriod],
+      [seriesCode, compliancePeriod, vintageYear ?? null],
     );
     return result.rows.map((row) => this.mapOrder(row));
   }
@@ -1414,6 +1478,8 @@ export class LimitOrderService implements OnModuleDestroy {
         : existing.limitPrice === dto.limitPrice;
     if (
       existing.seriesCode !== dto.seriesCode ||
+      existing.installationId !== dto.installationId ||
+      existing.vintageYear !== dto.vintageYear ||
       existing.compliancePeriod !== dto.compliancePeriod ||
       existing.side !== dto.side ||
       existing.orderType !== dto.orderType ||
@@ -1446,6 +1512,8 @@ export class LimitOrderService implements OnModuleDestroy {
       participantId: row.participant_id,
       clientOrderId: row.client_order_id,
       seriesCode: row.series_code,
+      installationId: row.installation_id,
+      vintageYear: row.vintage_year,
       compliancePeriod: row.compliance_period,
       side: row.side,
       orderType: row.order_type,
@@ -1477,6 +1545,8 @@ export class LimitOrderService implements OnModuleDestroy {
       participantId: stop.participantId,
       clientOrderId: this.activationClientOrderId(stop),
       seriesCode: stop.seriesCode,
+      installationId: stop.installationId,
+      vintageYear: stop.vintageYear,
       compliancePeriod: stop.compliancePeriod,
       side: stop.side,
       orderType: 'MARKET',
@@ -1510,6 +1580,8 @@ export class LimitOrderService implements OnModuleDestroy {
       participantId: row.participant_id,
       clientOrderId: row.client_order_id,
       seriesCode: row.series_code,
+      installationId: row.installation_id,
+      vintageYear: row.vintage_year,
       compliancePeriod: row.compliance_period,
       side: row.side,
       orderType: 'STOP',
@@ -1609,7 +1681,7 @@ export class LimitOrderService implements OnModuleDestroy {
 
   private async detectPotentialSelfMatch(incoming: LimitOrder): Promise<void> {
     const boundary = this.executionBoundary(incoming);
-    const candidate = (await this.listOpenOrders(incoming.seriesCode, incoming.compliancePeriod)).find(
+    const candidate = (await this.listOpenOrders(incoming.seriesCode, incoming.compliancePeriod, incoming.vintageYear)).find(
       (order) =>
         order.orderId !== incoming.orderId &&
         order.participantId === incoming.participantId &&
@@ -1704,7 +1776,10 @@ export class LimitOrderService implements OnModuleDestroy {
       sellerOrderId: row.seller_order_id,
       buyerParticipantId: row.buyer_participant_id,
       sellerParticipantId: row.seller_participant_id,
+      buyerInstallationId: row.buyer_installation_id,
+      sellerInstallationId: row.seller_installation_id,
       seriesCode: row.series_code,
+      vintageYear: row.vintage_year,
       compliancePeriod: row.compliance_period,
       quantity: this.toSafeNumber(row.quantity, 'quantity'),
       price: this.toSafeNumber(row.price, 'price'),

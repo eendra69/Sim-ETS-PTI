@@ -7,7 +7,10 @@ export interface SettlementInstruction {
   tradeId: string;
   buyerParticipantId: string;
   sellerParticipantId: string;
+  buyerInstallationId: string;
+  sellerInstallationId: string;
   seriesCode: string;
+  vintageYear: number;
   compliancePeriod: number;
   quantity: number;
   cashAmount: number;

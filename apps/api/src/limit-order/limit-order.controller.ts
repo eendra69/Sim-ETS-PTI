@@ -34,7 +34,7 @@ export class LimitOrderController {
   @Get('orders')
   @Roles('ADMIN', 'AUDITOR', 'MARKET_OPERATOR', 'TRADER', 'UAT_OPERATOR')
   listOrders(@Query() query: QueryOrderBookDto): Promise<Order[]> {
-    return this.limitOrderService.listOrders(query.seriesCode, query.compliancePeriod);
+    return this.limitOrderService.listOrders(query.seriesCode, query.compliancePeriod, query.vintageYear);
   }
 
   @Get('orders/:orderId')
@@ -54,19 +54,19 @@ export class LimitOrderController {
   @Post('orders/expire-day')
   @Roles('ADMIN', 'MARKET_OPERATOR', 'UAT_OPERATOR')
   expireDayOrders(@Query() query: QueryOrderBookDto): Promise<Order[]> {
-    return this.limitOrderService.expireDayOrders(query.seriesCode, query.compliancePeriod);
+    return this.limitOrderService.expireDayOrders(query.seriesCode, query.compliancePeriod, query.vintageYear);
   }
 
   @Get('order-book')
   @Roles('ADMIN', 'AUDITOR', 'MARKET_OPERATOR', 'TRADER', 'UAT_OPERATOR')
   getOrderBook(@Query() query: QueryOrderBookDto): Promise<OrderBookSnapshot> {
-    return this.limitOrderService.getOrderBook(query.seriesCode, query.compliancePeriod);
+    return this.limitOrderService.getOrderBook(query.seriesCode, query.compliancePeriod, query.vintageYear);
   }
 
   @Get('trigger-book')
   @Roles('ADMIN', 'AUDITOR', 'MARKET_OPERATOR', 'TRADER', 'UAT_OPERATOR')
   getTriggerBook(@Query() query: QueryOrderBookDto): Promise<TriggerBookSnapshot> {
-    return this.limitOrderService.getTriggerBook(query.seriesCode, query.compliancePeriod);
+    return this.limitOrderService.getTriggerBook(query.seriesCode, query.compliancePeriod, query.vintageYear);
   }
 
   @Post('trigger-book/evaluate')
@@ -78,7 +78,7 @@ export class LimitOrderController {
   @Get('trigger-events')
   @Roles('ADMIN', 'AUDITOR', 'MARKET_OPERATOR', 'TRADER', 'UAT_OPERATOR')
   listTriggerEvents(@Query() query: QueryOrderBookDto): Promise<TriggerEvent[]> {
-    return this.limitOrderService.listTriggerEvents(query.seriesCode, query.compliancePeriod);
+    return this.limitOrderService.listTriggerEvents(query.seriesCode, query.compliancePeriod, query.vintageYear);
   }
 
   @Get('trigger-events/:triggerEventId')
@@ -90,7 +90,7 @@ export class LimitOrderController {
   @Get('trades')
   @Roles('ADMIN', 'AUDITOR', 'MARKET_OPERATOR', 'SETTLEMENT_OPERATOR', 'TRADER', 'UAT_OPERATOR')
   listTrades(@Query() query: QueryOrderBookDto): Promise<Trade[]> {
-    return this.limitOrderService.listTrades(query.seriesCode, query.compliancePeriod);
+    return this.limitOrderService.listTrades(query.seriesCode, query.compliancePeriod, query.vintageYear);
   }
 
   @Get('trades/:tradeId')

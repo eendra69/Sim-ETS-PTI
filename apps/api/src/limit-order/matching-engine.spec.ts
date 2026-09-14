@@ -5,6 +5,8 @@ function order(overrides: Partial<LimitOrder>): LimitOrder {
   return {
     orderId: 'ORDER-1',
     participantId: 'IND-A',
+    installationId: 'INST-A-01',
+    vintageYear: 2027,
     clientOrderId: 'CLIENT-1',
     seriesCode: 'PTBAE-IND',
     compliancePeriod: 2027,
@@ -65,6 +67,19 @@ describe('matching engine', () => {
     const ownAsk = order({ orderId: 'ASK', participantId: 'IND-A', side: 'SELL' });
 
     expect(planMatches(incoming, [ownAsk])).toEqual([]);
+  });
+
+  it('never matches orders from different vintage books', () => {
+    const incoming = order({ orderId: 'BUY-2025', participantId: 'IND-D', vintageYear: 2025 });
+    const ask2024 = order({
+      orderId: 'ASK-2024',
+      participantId: 'IND-A',
+      side: 'SELL',
+      vintageYear: 2024,
+      limitPrice: 70_000,
+    });
+
+    expect(planMatches(incoming, [ask2024])).toEqual([]);
   });
 
   it('sweeps resting buyers from the highest bid when a sell order arrives', () => {

@@ -17,12 +17,13 @@ export class MarketDataService {
     compliancePeriod: number,
     fromTradeSequence?: number,
     toTradeSequence?: number,
+    vintageYear?: number,
   ): Promise<MarketDataSnapshot> {
     this.assertWindow(fromTradeSequence, toTradeSequence);
     this.assertMarket(seriesCode, compliancePeriod);
     const [allTrades, book] = await Promise.all([
-      this.orderService.listTrades(seriesCode, compliancePeriod),
-      this.orderService.getOrderBook(seriesCode, compliancePeriod),
+      this.orderService.listTrades(seriesCode, compliancePeriod, vintageYear),
+      this.orderService.getOrderBook(seriesCode, compliancePeriod, vintageYear),
     ]);
     const selectedTrades = this.selectTrades(allTrades, fromTradeSequence, toTradeSequence);
     const lastTrade = allTrades.at(-1) ?? null;
@@ -33,6 +34,7 @@ export class MarketDataService {
     return {
       seriesCode,
       compliancePeriod,
+      ...(vintageYear === undefined ? {} : { vintageYear }),
       sessionId: ruleset.marketSessionId,
       rulesetId: ruleset.rulesetId,
       state: lastTrade ? 'TRADING' : 'NO_TRADES',
@@ -59,10 +61,11 @@ export class MarketDataService {
     compliancePeriod: number,
     afterTradeSequence = 0,
     limit = 100,
+    vintageYear?: number,
   ): Promise<MarketDataTradeEvent[]> {
     this.assertMarket(seriesCode, compliancePeriod);
     const sessionId = this.orderService.getRuleset().marketSessionId;
-    return (await this.orderService.listTrades(seriesCode, compliancePeriod))
+    return (await this.orderService.listTrades(seriesCode, compliancePeriod, vintageYear))
       .filter((trade) => trade.tradeSequence > afterTradeSequence)
       .slice(0, limit)
       .map((trade) => this.toEvent(trade, sessionId));
@@ -73,12 +76,13 @@ export class MarketDataService {
     compliancePeriod: number,
     fromTradeSequence?: number,
     toTradeSequence?: number,
+    vintageYear?: number,
   ): Promise<MarketDataReplay> {
     this.assertWindow(fromTradeSequence, toTradeSequence);
     this.assertMarket(seriesCode, compliancePeriod);
     const sessionId = this.orderService.getRuleset().marketSessionId;
     const trades = this.selectTrades(
-      await this.orderService.listTrades(seriesCode, compliancePeriod),
+      await this.orderService.listTrades(seriesCode, compliancePeriod, vintageYear),
       fromTradeSequence,
       toTradeSequence,
     );
@@ -86,6 +90,7 @@ export class MarketDataService {
     return {
       seriesCode,
       compliancePeriod,
+      ...(vintageYear === undefined ? {} : { vintageYear }),
       sessionId,
       points: trades.map((trade) => {
         rolling = this.appendTrade(rolling, trade);

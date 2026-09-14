@@ -21,6 +21,8 @@ export interface PositionSnapshot {
 export interface LimitOrder {
   orderId: string;
   participantId: string;
+  installationId: string;
+  vintageYear: number;
   side: 'BUY' | 'SELL';
   orderType: 'LIMIT' | 'MARKET';
   remainingQuantity: number;
@@ -33,6 +35,8 @@ export interface LimitOrder {
 export interface StopOrder {
   orderId: string;
   participantId: string;
+  installationId: string;
+  vintageYear: number;
   side: 'BUY' | 'SELL';
   orderType: 'STOP';
   remainingQuantity: number;
@@ -46,6 +50,9 @@ export interface Trade {
   tradeId: string;
   buyerParticipantId: string;
   sellerParticipantId: string;
+  buyerInstallationId: string;
+  sellerInstallationId: string;
+  vintageYear: number;
   quantity: number;
   price: number;
   notional: number;
@@ -60,16 +67,19 @@ export interface BookLevel {
 }
 
 export interface OrderBook {
+  vintageYear?: number;
   bids: BookLevel[];
   asks: BookLevel[];
   orders: { bids: LimitOrder[]; asks: LimitOrder[] };
 }
 
 export interface TriggerBook {
+  vintageYear?: number;
   entries: StopOrder[];
 }
 
 export interface MarketDataSnapshot {
+  vintageYear?: number;
   state: 'NO_TRADES' | 'TRADING';
   referencePrice: number;
   lastTradedPrice: number | null;
@@ -94,6 +104,11 @@ export interface SettlementBundle {
   settlement: {
     settlementId: string;
     tradeId: string;
+    buyerParticipantId: string;
+    sellerParticipantId: string;
+    buyerInstallationId: string;
+    sellerInstallationId: string;
+    vintageYear: number;
     status: 'PENDING' | 'PROCESSING' | 'SETTLED' | 'FAILED' | 'REVERSED';
     quantity: number;
     cashAmount: number;

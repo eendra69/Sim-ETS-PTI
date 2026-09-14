@@ -29,7 +29,7 @@ export class SettlementController {
   @Get('settlements')
   @Roles('ADMIN', 'AUDITOR', 'MARKET_OPERATOR', 'SETTLEMENT_OPERATOR', 'UAT_OPERATOR')
   list(@Query() query: QuerySettlementDto): Promise<SettlementBundle[]> {
-    return this.settlementService.list(query.seriesCode, query.compliancePeriod);
+    return this.settlementService.list(query.seriesCode, query.compliancePeriod, query.vintageYear);
   }
 
   @Get('settlements/:settlementId')

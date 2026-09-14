@@ -7,6 +7,7 @@ const apiKey = process.env.UAT_API_KEY;
 const expectedActorId = process.env.UAT_ACTOR_ID ?? 'CI-UAT';
 const reportPath = process.env.UAT_REPORT_PATH ?? 'outputs/uat/uat-synthetic-2025.json';
 const period = 2025;
+const vintageYear = 2025;
 const seriesCode = 'PTBAE-IND';
 const quantity = 1_000;
 const price = 76_000;
@@ -80,6 +81,19 @@ async function run() {
     buyer: buyer?.participantId, buyerNeed: buyer?.availableBuyNeed,
   });
 
+  const sellerInstallations = (await api(`/installations?participantId=${seller.participantId}`)).payload;
+  const buyerInstallations = (await api(`/installations?participantId=${buyer.participantId}`)).payload;
+  const sellerInstallation = sellerInstallations.find((item) => item.status === 'ACTIVE');
+  const buyerInstallation = buyerInstallations.find((item) => item.status === 'ACTIVE');
+  const sellerHoldings = (await api(
+    `/vintage-holdings?participantId=${seller.participantId}&installationId=${sellerInstallation?.installationId ?? ''}&seriesCode=${seriesCode}&vintageYear=${vintageYear}&targetCompliancePeriod=${period}`,
+  )).payload;
+  const sellerHolding = sellerHoldings.find((item) =>
+    item.eligibleForTargetPeriod && item.sourceStatus === 'VERIFIED' && item.tradableAvailableUnits >= quantity);
+  check('DATA-03B installation and verified vintage holding are eligible',
+    sellerInstallation && buyerInstallation && sellerHolding,
+    { sellerInstallation, buyerInstallation, sellerHolding });
+
   const provisional = (await api(`/positions?seriesCode=${seriesCode}&compliancePeriod=2026`)).payload
     .find((item) => item.availableToSell >= 1);
   check('DATA-04 provisional 2026 sample exists', provisional?.sourceStatus === 'PROVISIONAL', {
@@ -116,21 +130,26 @@ async function run() {
   const tradeCorrelation = randomUUID();
   await api('/orders', { method: 'POST', body: {
     participantId: seller.participantId, clientOrderId: `${runId}-SELL`, seriesCode,
+    installationId: sellerInstallation.installationId, vintageYear,
     compliancePeriod: period, side: 'SELL', orderType: 'LIMIT', quantity,
     limitPrice: price, timeInForce: 'DAY', correlationId: tradeCorrelation,
   } });
   const buyOrder = (await api('/orders', { method: 'POST', body: {
     participantId: buyer.participantId, clientOrderId: `${runId}-BUY`, seriesCode,
+    installationId: buyerInstallation.installationId, vintageYear,
     compliancePeriod: period, side: 'BUY', orderType: 'LIMIT', quantity,
     limitPrice: price, timeInForce: 'DAY', correlationId: tradeCorrelation,
   } })).payload;
   check('TRADE-01 LIMIT orders matched automatically', buyOrder.status === 'FILLED' && buyOrder.remainingQuantity === 0, buyOrder);
 
-  const trades = (await api(`/trades?seriesCode=${seriesCode}&compliancePeriod=${period}`)).payload;
+  const trades = (await api(`/trades?seriesCode=${seriesCode}&compliancePeriod=${period}&vintageYear=${vintageYear}`)).payload;
   const trade = [...trades].reverse().find((item) =>
     item.buyerParticipantId === buyer.participantId && item.sellerParticipantId === seller.participantId &&
     item.quantity === quantity && item.price === price);
-  check('TRADE-02 price and trade record formed', trade, trade);
+  check('TRADE-02 price and vintage-installation lineage formed', trade &&
+    trade.vintageYear === vintageYear &&
+    trade.sellerInstallationId === sellerInstallation.installationId &&
+    trade.buyerInstallationId === buyerInstallation.installationId, trade);
 
   let bundle = (await api(`/settlements/from-trade/${trade.tradeId}`, {
     method: 'POST', body: { ...adminCommand('SETTLEMENT-CREATE') },
@@ -148,7 +167,10 @@ async function run() {
   })).payload;
   check('SET-01 DvP and SRUK reconciliation finalized',
     bundle.settlement.status === 'SETTLED' && bundle.registryMessage.status === 'ACKNOWLEDGED' &&
-    bundle.reconciliation.status === 'MATCHED' && bundle.finalized === true, bundle);
+    bundle.reconciliation.status === 'MATCHED' && bundle.finalized === true &&
+    bundle.settlement.vintageYear === vintageYear &&
+    bundle.settlement.sellerInstallationId === sellerInstallation.installationId &&
+    bundle.settlement.buyerInstallationId === buyerInstallation.installationId, bundle);
 
   const sellerAfter = (await api(`/positions/${seller.participantId}?seriesCode=${seriesCode}&compliancePeriod=${period}`)).payload;
   const buyerAfter = (await api(`/positions/${buyer.participantId}?seriesCode=${seriesCode}&compliancePeriod=${period}`)).payload;
@@ -169,7 +191,7 @@ async function run() {
     rulesetAudits.map((event) => ({ eventType: event.eventType, actorId: event.actorId })));
 
   await api(`/market-sessions/${sessionId}/close`, { method: 'POST', body: adminCommand('SESSION-CLOSE') });
-  return { runId, status: 'PASS', executedAt: new Date().toISOString(), baseUrl, datasetPeriod: period,
+  return { runId, status: 'PASS', executedAt: new Date().toISOString(), baseUrl, datasetPeriod: period, vintageYear,
     sellerParticipantId: seller.participantId, buyerParticipantId: buyer.participantId,
     tradeId: trade.tradeId, settlementId: bundle.settlement.settlementId, checks };
 }

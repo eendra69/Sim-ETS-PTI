@@ -22,6 +22,8 @@ describe('SettlementService', () => {
   ) {
     await orders.submit({
       participantId: seller,
+      installationId: `INST-${seller.slice(-1)}-01`,
+      vintageYear: 2027,
       clientOrderId: `ASK-${suffix}`,
       seriesCode: 'PTBAE-IND',
       compliancePeriod: 2027,
@@ -33,6 +35,8 @@ describe('SettlementService', () => {
     });
     await orders.submit({
       participantId: buyer,
+      installationId: `INST-${buyer.slice(-1)}-01`,
+      vintageYear: 2027,
       clientOrderId: `BUY-${suffix}`,
       seriesCode: 'PTBAE-IND',
       compliancePeriod: 2027,
@@ -60,6 +64,11 @@ describe('SettlementService', () => {
     expect(executed.acknowledgedPurchases).toBe(before.acknowledgedPurchases);
     expect(executed.executedBuyPending).toBe(10_000);
     expect(bundle.settlement.status).toBe('SETTLED');
+    expect(bundle.settlement).toMatchObject({
+      vintageYear: 2027,
+      buyerInstallationId: 'INST-D-01',
+      sellerInstallationId: 'INST-A-01',
+    });
     expect(afterSettlement.netPosition).toBe(before.netPosition);
     expect(afterSettlement.executedBuyPending).toBe(10_000);
   });

@@ -22,6 +22,8 @@ describe('MarketDataService', () => {
   ) =>
     orders.submit({
       participantId,
+      installationId: `INST-${participantId.slice(-1)}-01`,
+      vintageYear: 2027,
       clientOrderId,
       seriesCode: 'PTBAE-IND',
       compliancePeriod: 2027,
@@ -38,6 +40,8 @@ describe('MarketDataService', () => {
     await limit('IND-C', 'MD-ASK-78', 'SELL', 10_000, 78_000);
     await orders.submit({
       participantId: 'IND-D',
+      installationId: 'INST-D-01',
+      vintageYear: 2027,
       clientOrderId: 'MD-MARKET-BUY',
       seriesCode: 'PTBAE-IND',
       compliancePeriod: 2027,
@@ -52,6 +56,8 @@ describe('MarketDataService', () => {
   it('keeps reference price separate from an explicit no-trade state', async () => {
     await orders.submit({
       participantId: 'IND-D',
+      installationId: 'INST-D-01',
+      vintageYear: 2027,
       clientOrderId: 'MD-HIDDEN-STOP',
       seriesCode: 'PTBAE-IND',
       compliancePeriod: 2027,

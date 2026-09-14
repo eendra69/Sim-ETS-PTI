@@ -52,18 +52,18 @@ describe('GovernanceService integration', () => {
   });
 
   it('halts order entry without changing reservations, then resumes trading', async () => {
-    const resting = await orders.submit({ participantId:'IND-A',clientOrderId:'HALT-RESTING',seriesCode:'PTBAE-IND',
+    const resting = await orders.submit({ participantId:'IND-A',installationId:'INST-A-01',vintageYear:2027,clientOrderId:'HALT-RESTING',seriesCode:'PTBAE-IND',
       compliancePeriod:2027,side:'SELL',orderType:'LIMIT',quantity:5_000,limitPrice:75_000,timeInForce:'DAY' });
     await governance.transitionSession('PTBAE-IND-2027-REGULAR','HALT',admin('session-halt-1'));
 
-    await expect(orders.submit({ participantId:'IND-B',clientOrderId:'HALT-BLOCKED',seriesCode:'PTBAE-IND',
+    await expect(orders.submit({ participantId:'IND-B',installationId:'INST-B-01',vintageYear:2027,clientOrderId:'HALT-BLOCKED',seriesCode:'PTBAE-IND',
       compliancePeriod:2027,side:'SELL',orderType:'LIMIT',quantity:5_000,limitPrice:75_000,timeInForce:'DAY' }))
       .rejects.toMatchObject({ response: expect.objectContaining({ code: 'MARKET-HALTED' }) });
     expect((await positions.getPosition('IND-A','PTBAE-IND',2027)).reservedSell).toBe(5_000);
     expect((await positions.getPosition('IND-B','PTBAE-IND',2027)).reservedSell).toBe(0);
 
     await governance.transitionSession('PTBAE-IND-2027-REGULAR','RESUME',admin('session-resume-1'));
-    const buy = await orders.submit({ participantId:'IND-D',clientOrderId:'HALT-AFTER-RESUME',seriesCode:'PTBAE-IND',
+    const buy = await orders.submit({ participantId:'IND-D',installationId:'INST-D-01',vintageYear:2027,clientOrderId:'HALT-AFTER-RESUME',seriesCode:'PTBAE-IND',
       compliancePeriod:2027,side:'BUY',orderType:'LIMIT',quantity:5_000,limitPrice:75_000,timeInForce:'DAY' });
     expect(resting.status).toBe('OPEN');
     expect(buy.status).toBe('FILLED');
@@ -71,9 +71,9 @@ describe('GovernanceService integration', () => {
 
   it('preserves a correlation chain from order command through position finalization', async () => {
     const correlationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    await orders.submit({ participantId:'IND-A',clientOrderId:'AUDIT-SELL',seriesCode:'PTBAE-IND',compliancePeriod:2027,
+    await orders.submit({ participantId:'IND-A',installationId:'INST-A-01',vintageYear:2027,clientOrderId:'AUDIT-SELL',seriesCode:'PTBAE-IND',compliancePeriod:2027,
       side:'SELL',orderType:'LIMIT',quantity:10_000,limitPrice:75_000,timeInForce:'DAY' });
-    await orders.submit({ participantId:'IND-D',clientOrderId:'AUDIT-BUY',seriesCode:'PTBAE-IND',compliancePeriod:2027,
+    await orders.submit({ participantId:'IND-D',installationId:'INST-D-01',vintageYear:2027,clientOrderId:'AUDIT-BUY',seriesCode:'PTBAE-IND',compliancePeriod:2027,
       side:'BUY',orderType:'LIMIT',quantity:10_000,limitPrice:75_000,timeInForce:'DAY',correlationId });
     const trade=(await orders.listTrades('PTBAE-IND',2027))[0]!;
     const settlements=new SettlementService(orders,positions,governance);
@@ -90,12 +90,12 @@ describe('GovernanceService integration', () => {
   });
 
   it('creates price, volume, and repeated-cancel surveillance alerts', async () => {
-    await orders.submit({participantId:'IND-A',clientOrderId:'ALERT-SELL',seriesCode:'PTBAE-IND',compliancePeriod:2027,
+    await orders.submit({participantId:'IND-A',installationId:'INST-A-01',vintageYear:2027,clientOrderId:'ALERT-SELL',seriesCode:'PTBAE-IND',compliancePeriod:2027,
       side:'SELL',orderType:'LIMIT',quantity:30_000,limitPrice:60_000,timeInForce:'DAY'});
-    await orders.submit({participantId:'IND-D',clientOrderId:'ALERT-BUY',seriesCode:'PTBAE-IND',compliancePeriod:2027,
+    await orders.submit({participantId:'IND-D',installationId:'INST-D-01',vintageYear:2027,clientOrderId:'ALERT-BUY',seriesCode:'PTBAE-IND',compliancePeriod:2027,
       side:'BUY',orderType:'LIMIT',quantity:30_000,limitPrice:60_000,timeInForce:'DAY'});
     for(let index=1;index<=3;index++){
-      const order=await orders.submit({participantId:'IND-B',clientOrderId:`CANCEL-${index}`,seriesCode:'PTBAE-IND',compliancePeriod:2027,
+      const order=await orders.submit({participantId:'IND-B',installationId:'INST-B-01',vintageYear:2027,clientOrderId:`CANCEL-${index}`,seriesCode:'PTBAE-IND',compliancePeriod:2027,
         side:'SELL',orderType:'LIMIT',quantity:1_000,limitPrice:80_000,timeInForce:'DAY'});
       await orders.cancel(order.orderId);
     }
@@ -119,9 +119,9 @@ describe('GovernanceService integration', () => {
       marketSessionId:'PTBAE-IND-2027-REGULAR',settlementFinality:'DVP_SETTLED' });
     await governance.approve(draft.rulesetId,admin('dvp-approve-v2'));
     await governance.activate(draft.rulesetId,admin('dvp-activate-v2'));
-    await orders.submit({participantId:'IND-A',clientOrderId:'DVP-SELL',seriesCode:'PTBAE-IND',compliancePeriod:2027,
+    await orders.submit({participantId:'IND-A',installationId:'INST-A-01',vintageYear:2027,clientOrderId:'DVP-SELL',seriesCode:'PTBAE-IND',compliancePeriod:2027,
       side:'SELL',orderType:'LIMIT',quantity:10_000,limitPrice:75_000,timeInForce:'DAY'});
-    await orders.submit({participantId:'IND-D',clientOrderId:'DVP-BUY',seriesCode:'PTBAE-IND',compliancePeriod:2027,
+    await orders.submit({participantId:'IND-D',installationId:'INST-D-01',vintageYear:2027,clientOrderId:'DVP-BUY',seriesCode:'PTBAE-IND',compliancePeriod:2027,
       side:'BUY',orderType:'LIMIT',quantity:10_000,limitPrice:75_000,timeInForce:'DAY'});
     const trade=(await orders.listTrades('PTBAE-IND',2027))[0]!;
     const settlements=new SettlementService(orders,positions,governance);

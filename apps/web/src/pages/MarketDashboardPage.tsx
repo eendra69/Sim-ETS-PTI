@@ -76,6 +76,7 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [participantId, setParticipantId] = useState('IND-A');
+  const [selectedVintageYear, setSelectedVintageYear] = useState(2024);
   const [side, setSide] = useState<'BUY' | 'SELL'>('SELL');
   const [orderType, setOrderType] = useState<'LIMIT' | 'MARKET' | 'STOP'>('LIMIT');
   const [quantity, setQuantity] = useState(5_000);
@@ -87,14 +88,15 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
   const refresh = useCallback(async () => {
     try {
       const currentRuleset = await api<GovernedRuleset>('/market-rulesets/current');
+      const marketQuery = `seriesCode=${encodeURIComponent(currentRuleset.seriesCode)}&compliancePeriod=${currentRuleset.compliancePeriod}&vintageYear=${selectedVintageYear}`;
       const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements, nextRulesets, nextSession, nextAudit, nextAlerts, nextScenarios] = await Promise.all([
         api<PositionSnapshot[]>(`/positions?seriesCode=PTBAE-IND&compliancePeriod=${positionPeriod}`),
-        api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
-        api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
-        api<TriggerBook>('/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
-        api<MarketDataSnapshot>('/market-data/snapshot?seriesCode=PTBAE-IND&compliancePeriod=2027'),
-        api<SettlementBundle[]>('/settlements?seriesCode=PTBAE-IND&compliancePeriod=2027'),
-        api<GovernedRuleset[]>('/rulesets?seriesCode=PTBAE-IND&compliancePeriod=2027'),
+        api<OrderBook>(`/order-book?${marketQuery}`),
+        api<Trade[]>(`/trades?${marketQuery}`),
+        api<TriggerBook>(`/trigger-book?${marketQuery}`),
+        api<MarketDataSnapshot>(`/market-data/snapshot?${marketQuery}`),
+        api<SettlementBundle[]>(`/settlements?${marketQuery}`),
+        api<GovernedRuleset[]>(`/rulesets?seriesCode=${encodeURIComponent(currentRuleset.seriesCode)}&compliancePeriod=${currentRuleset.compliancePeriod}`),
         api<MarketSession>(`/market-sessions/${currentRuleset.marketSessionId}`),
         api<AuditEvent[]>('/audit-events?limit=30'),
         api<SurveillanceAlert[]>('/surveillance-alerts?limit=30'),
@@ -116,7 +118,7 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Tidak dapat memuat data');
     }
-  }, [positionPeriod]);
+  }, [positionPeriod, selectedVintageYear]);
 
   const refreshCatalog = useCallback(async () => {
     setCatalogLoading(true);
@@ -155,6 +157,28 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
     }
   }, [participantId, positions]);
 
+  const eligibleVintages = useMemo(
+    () => vintages.filter((item) => item.status === 'ACTIVE' && item.admission?.status === 'ACTIVE' && item.eligibility?.eligible),
+    [vintages],
+  );
+
+  useEffect(() => {
+    if (eligibleVintages.length && !eligibleVintages.some((item) => item.vintageYear === selectedVintageYear)) {
+      setSelectedVintageYear(eligibleVintages[0]!.vintageYear);
+    }
+  }, [eligibleVintages, selectedVintageYear]);
+
+  useEffect(() => {
+    if (side !== 'SELL') return;
+    const tradable = holdings.find((item) =>
+      item.participantId === participantId && item.eligibleForTargetPeriod && item.tradableAvailableUnits > 0,
+    );
+    if (tradable && !holdings.some((item) =>
+      item.participantId === participantId && item.vintageYear === selectedVintageYear &&
+      item.eligibleForTargetPeriod && item.tradableAvailableUnits > 0,
+    )) setSelectedVintageYear(tradable.vintageYear);
+  }, [holdings, participantId, selectedVintageYear, side]);
+
   const totals = useMemo(
     () => ({
       supply: positions.reduce((sum, item) => sum + item.availableToSell, 0),
@@ -181,6 +205,8 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           participantId,
+          installationId: currentInstallation?.installationId,
+          vintageYear: selectedVintageYear,
           clientOrderId: `WEB-${participantId}-${Date.now()}`,
           seriesCode: 'PTBAE-IND',
           compliancePeriod: 2027,
@@ -360,11 +386,18 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
     (left, right) => left.limitPrice! - right.limitPrice!,
   );
   const currentInstallation = installations.find((item) => item.participantId === participantId);
+  const selectedHolding = holdings.find((item) =>
+    item.participantId === participantId && item.installationId === currentInstallation?.installationId &&
+    item.vintageYear === selectedVintageYear,
+  );
+  const sellVintageReady = side === 'BUY' || Boolean(selectedHolding?.eligibleForTargetPeriod && selectedHolding.tradableAvailableUnits >= quantity);
+  const orderContextReady = Boolean(currentInstallation && eligibleVintages.some((item) => item.vintageYear === selectedVintageYear) && sellVintageReady);
 
   return (
     <AppShell
       participantId={participantId}
       installationId={currentInstallation?.installationId}
+      vintageYear={view === 'market' ? selectedVintageYear : undefined}
       positionPeriod={positionPeriod}
       targetCompliancePeriod={view === 'market' ? activeRuleset?.compliancePeriod ?? 2027 : catalogTargetPeriod}
       sessionStatus={marketSession?.status}
@@ -441,7 +474,7 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
 
       <section className="panel orders-panel anchor-section" id="settlement">
         <div className="panel-heading compact"><div><p className="eyebrow">T+0 DVP · SRUK ADAPTER</p><h2>Settlement & reconciliation</h2></div><p>Holding dan posisi acknowledged baru berubah setelah kuantitas SRUK cocok.</p></div>
-        <div className="table-wrap"><table><thead><tr><th>Trade</th><th>Buyer → Seller</th><th>Settlement</th><th>SRUK</th><th>Reconciliation</th><th>Attempt</th><th></th></tr></thead><tbody>{trades.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada trade untuk diselesaikan</td></tr> : [...trades].reverse().map((trade) => { const bundle = settlements.find((item) => item.settlement.tradeId === trade.tradeId); return <tr key={trade.tradeId}><td>#{trade.tradeSequence}<small>{number.format(trade.quantity)} tCO₂e</small></td><td>{trade.buyerParticipantId} → {trade.sellerParticipantId}</td><td><span className={`pill ${bundle?.settlement.status === 'FAILED' ? 'deficit' : bundle?.settlement.status === 'SETTLED' ? 'surplus' : 'balanced'}`}>{bundle?.settlement.status ?? 'NOT PREPARED'}</span></td><td>{bundle?.registryMessage.status ?? '—'}{bundle?.registryMessage.registryReference ? <small>{bundle.registryMessage.registryReference}</small> : null}</td><td>{bundle?.reconciliation.status ?? '—'}{bundle?.reconciliation.exceptionReason ? <small>{bundle.reconciliation.exceptionReason}</small> : null}</td><td>{bundle?.registryMessage.attemptCount ?? 0}</td><td><button className="cancel post-trade-action" disabled={busy || bundle?.finalized || bundle?.settlement.status === 'REVERSED'} onClick={() => void postTradeAction(trade, bundle)}>{nextPostTradeAction(bundle)}</button></td></tr>; })}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Trade / vintage</th><th>Buyer → Seller</th><th>Settlement</th><th>SRUK</th><th>Reconciliation</th><th>Attempt</th><th></th></tr></thead><tbody>{trades.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada trade V{selectedVintageYear} untuk diselesaikan</td></tr> : [...trades].reverse().map((trade) => { const bundle = settlements.find((item) => item.settlement.tradeId === trade.tradeId); return <tr key={trade.tradeId}><td>#{trade.tradeSequence}<small>V{trade.vintageYear} · {number.format(trade.quantity)} tCO₂e</small></td><td>{trade.buyerParticipantId} → {trade.sellerParticipantId}<small>{trade.buyerInstallationId} → {trade.sellerInstallationId}</small></td><td><span className={`pill ${bundle?.settlement.status === 'FAILED' ? 'deficit' : bundle?.settlement.status === 'SETTLED' ? 'surplus' : 'balanced'}`}>{bundle?.settlement.status ?? 'NOT PREPARED'}</span></td><td>{bundle?.registryMessage.status ?? '—'}{bundle?.registryMessage.registryReference ? <small>{bundle.registryMessage.registryReference}</small> : null}</td><td>{bundle?.reconciliation.status ?? '—'}{bundle?.reconciliation.exceptionReason ? <small>{bundle.reconciliation.exceptionReason}</small> : null}</td><td>{bundle?.registryMessage.attemptCount ?? 0}</td><td><button className="cancel post-trade-action" disabled={busy || bundle?.finalized || bundle?.settlement.status === 'REVERSED'} onClick={() => void postTradeAction(trade, bundle)}>{nextPostTradeAction(bundle)}</button></td></tr>; })}</tbody></table></div>
       </section>
 
       <section className="trading-grid anchor-section">
@@ -451,6 +484,8 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
           </div>
           <div className="form-grid">
             <label>Peserta<select value={participantId} onChange={(event) => setParticipantId(event.target.value)}>{positions.map((position) => <option key={position.participantId} value={position.participantId}>{position.participantId} · {position.participantName}</option>)}</select></label>
+            <label>Instalasi<input value={currentInstallation?.installationId ?? ''} readOnly aria-label="Instalasi penerima atau penjual" /></label>
+            <label>Vintage<select value={selectedVintageYear} onChange={(event) => setSelectedVintageYear(Number(event.target.value))}>{eligibleVintages.map((vintage) => <option key={vintage.vintageId} value={vintage.vintageYear}>V{vintage.vintageYear} · {vintage.bankingStatus}</option>)}</select></label>
             <label>Jenis order<select value={orderType} onChange={(event) => { const next = event.target.value as 'LIMIT' | 'MARKET' | 'STOP'; setOrderType(next); setTimeInForce(next === 'MARKET' ? 'IOC' : 'DAY'); }}><option>LIMIT</option><option>MARKET</option><option>STOP</option></select></label>
             <label>Sisi<select value={side} onChange={(event) => setSide(event.target.value as 'BUY' | 'SELL')}><option>SELL</option><option>BUY</option></select></label>
             <label>Quantity<input type="number" min="1" step="1" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} /></label>
@@ -458,8 +493,9 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
             {orderType === 'STOP' ? <label>Stop price · LTP<input type="number" min="60000" max="90000" step="200" value={stopPrice} onChange={(event) => setStopPrice(Number(event.target.value))} /></label> : null}
             <label>Time in force<select value={timeInForce} disabled={orderType === 'MARKET'} onChange={(event) => setTimeInForce(event.target.value as 'DAY' | 'GTC')}><option>DAY</option><option>GTC</option>{orderType === 'MARKET' ? <option>IOC</option> : null}</select></label>
           </div>
+          {side === 'SELL' ? <p className="history-note">Holding V{selectedVintageYear}: {number.format(selectedHolding?.tradableAvailableUnits ?? 0)} tCO₂e dapat dijual · {selectedHolding?.sourceStatus ?? 'TIDAK TERSEDIA'}</p> : <p className="history-note">Unit hasil beli akan dicatat untuk instalasi {currentInstallation?.installationId ?? '—'} dengan vintage V{selectedVintageYear}.</p>}
           {positionPeriod !== (activeRuleset?.compliancePeriod ?? 2027) ? <p className="history-note">Order entry dinonaktifkan saat melihat posisi historis/provisional. Pilih periode pasar aktif.</p> : null}
-          <button type="submit" disabled={busy || positionPeriod !== (activeRuleset?.compliancePeriod ?? 2027)}>{busy ? 'Memproses…' : `Kirim ${side} ${orderType}`}</button>
+          <button type="submit" disabled={busy || !orderContextReady || positionPeriod !== (activeRuleset?.compliancePeriod ?? 2027)}>{busy ? 'Memproses…' : `Kirim ${side} ${orderType}`}</button>
           <small className="hint">Maximum exposure: {money.format(quantity * (orderType === 'LIMIT' ? limitPrice : protectionPrice))}</small>
         </form>
 
@@ -474,17 +510,17 @@ export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
 
       <section className="panel orders-panel anchor-section" id="trigger-book">
         <div className="panel-heading compact"><div><p className="eyebrow">NON-VISIBLE CONDITIONAL QUEUE</p><h2>Trigger book</h2></div><p>STOP menunggu LTP: BUY aktif saat LTP ≥ stop, SELL saat LTP ≤ stop.</p></div>
-        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Side</th><th>Stop price</th><th>Protection</th><th>Quantity</th><th>TIF</th><th></th></tr></thead><tbody>{triggerBook.entries.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada STOP pending</td></tr> : triggerBook.entries.map((order) => <tr key={order.orderId}><td>{order.participantId}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.stopPrice)}</td><td>{money.format(order.protectionPrice)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Peserta / instalasi</th><th>Vintage</th><th>Side</th><th>Stop price</th><th>Protection</th><th>Quantity</th><th>TIF</th><th></th></tr></thead><tbody>{triggerBook.entries.length === 0 ? <tr><td colSpan={8} className="empty-cell">Belum ada STOP pending untuk V{selectedVintageYear}</td></tr> : triggerBook.entries.map((order) => <tr key={order.orderId}><td>{order.participantId}<small>{order.installationId}</small></td><td>V{order.vintageYear}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.stopPrice)}</td><td>{money.format(order.protectionPrice)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
       </section>
 
       <section className="panel orders-panel anchor-section" id="orders">
         <div className="panel-heading compact"><div><p className="eyebrow">PRICE–TIME QUEUE</p><h2>Open orders</h2></div><p>Hanya sisa order yang belum terisi yang tampil di antrean.</p></div>
-        <div className="table-wrap"><table><thead><tr><th>Peserta</th><th>Side</th><th>Price</th><th>Remaining</th><th>TIF</th><th></th></tr></thead><tbody>{openOrders.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada order aktif</td></tr> : openOrders.map((order) => <tr key={order.orderId}><td>{order.participantId}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.limitPrice!)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Peserta / instalasi</th><th>Vintage</th><th>Side</th><th>Price</th><th>Remaining</th><th>TIF</th><th></th></tr></thead><tbody>{openOrders.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada order aktif untuk V{selectedVintageYear}</td></tr> : openOrders.map((order) => <tr key={order.orderId}><td>{order.participantId}<small>{order.installationId}</small></td><td>V{order.vintageYear}</td><td><span className={`side ${order.side.toLowerCase()}`}>{order.side}</span></td><td>{money.format(order.limitPrice!)}</td><td>{number.format(order.remainingQuantity)}</td><td>{order.timeInForce}</td><td><button className="cancel" disabled={busy} onClick={() => void cancelOrder(order.orderId)}>Cancel</button></td></tr>)}</tbody></table></div>
       </section>
 
       <section className="panel orders-panel anchor-section" id="trades">
         <div className="panel-heading compact"><div><p className="eyebrow">IMMUTABLE LEDGER</p><h2>Executed trades</h2></div><p>Harga eksekusi mengikuti harga resting order.</p></div>
-        <div className="table-wrap"><table><thead><tr><th>Sequence</th><th>Buyer</th><th>Seller</th><th>Price</th><th>Quantity</th><th>Notional</th></tr></thead><tbody>{trades.length === 0 ? <tr><td colSpan={6} className="empty-cell">Belum ada trade</td></tr> : [...trades].reverse().map((trade) => <tr key={trade.tradeId}><td>#{trade.tradeSequence}</td><td>{trade.buyerParticipantId}</td><td>{trade.sellerParticipantId}</td><td>{money.format(trade.price)}</td><td>{number.format(trade.quantity)}</td><td>{money.format(trade.notional)}</td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>Sequence</th><th>Vintage</th><th>Buyer / instalasi</th><th>Seller / instalasi</th><th>Price</th><th>Quantity</th><th>Notional</th></tr></thead><tbody>{trades.length === 0 ? <tr><td colSpan={7} className="empty-cell">Belum ada trade untuk V{selectedVintageYear}</td></tr> : [...trades].reverse().map((trade) => <tr key={trade.tradeId}><td>#{trade.tradeSequence}</td><td>V{trade.vintageYear}</td><td>{trade.buyerParticipantId}<small>{trade.buyerInstallationId}</small></td><td>{trade.sellerParticipantId}<small>{trade.sellerInstallationId}</small></td><td>{money.format(trade.price)}</td><td>{number.format(trade.quantity)}</td><td>{money.format(trade.notional)}</td></tr>)}</tbody></table></div>
       </section>
 
       <section className="panel positions-panel anchor-section" id="positions">

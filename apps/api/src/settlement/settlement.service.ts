@@ -31,6 +31,7 @@ import {
 
 interface SettlementRow extends QueryResultRow {
   settlement_id: string; trade_id: string; buyer_participant_id: string; seller_participant_id: string;
+  buyer_installation_id: string; seller_installation_id: string; vintage_year: number;
   series_code: string; compliance_period: number; quantity: string; cash_amount: string;
   settlement_type: 'T0_DVP'; status: SettlementInstruction['status']; ruleset_id: string;
   correlation_id: string; failure_reason: string | null; created_at: Date; processed_at: Date | null;
@@ -134,10 +135,12 @@ export class SettlementService implements OnModuleDestroy {
         const reconciliationId = randomUUID();
         await client.query(
           `INSERT INTO settlement_instructions (
-             settlement_id, trade_id, buyer_participant_id, seller_participant_id, series_code,
+             settlement_id, trade_id, buyer_participant_id, seller_participant_id,
+             buyer_installation_id, seller_installation_id, vintage_year, series_code,
              compliance_period, quantity, cash_amount, ruleset_id, correlation_id
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
           [settlementId, trade.tradeId, trade.buyerParticipantId, trade.sellerParticipantId,
+            trade.buyerInstallationId, trade.sellerInstallationId, trade.vintageYear,
             trade.seriesCode, trade.compliancePeriod, trade.quantity, trade.notional,
             trade.rulesetId, correlationId],
         );
@@ -177,7 +180,11 @@ export class SettlementService implements OnModuleDestroy {
       const correlationId = trade.correlationId;
       const settlement: SettlementInstruction = {
         settlementId: command.aggregateId, tradeId, buyerParticipantId: trade.buyerParticipantId,
-        sellerParticipantId: trade.sellerParticipantId, seriesCode: trade.seriesCode,
+        sellerParticipantId: trade.sellerParticipantId,
+        buyerInstallationId: trade.buyerInstallationId,
+        sellerInstallationId: trade.sellerInstallationId,
+        vintageYear: trade.vintageYear,
+        seriesCode: trade.seriesCode,
         compliancePeriod: trade.compliancePeriod, quantity: trade.quantity, cashAmount: trade.notional,
         settlementType: 'T0_DVP', status: 'PENDING', rulesetId: trade.rulesetId,
         correlationId, createdAt: now, updatedAt: now,
@@ -205,16 +212,18 @@ export class SettlementService implements OnModuleDestroy {
     });
   }
 
-  async list(seriesCode: string, compliancePeriod: number): Promise<SettlementBundle[]> {
+  async list(seriesCode: string, compliancePeriod: number, vintageYear?: number): Promise<SettlementBundle[]> {
     if (!this.pool) {
       return [...this.settlements.values()]
-        .filter((item) => item.seriesCode === seriesCode && item.compliancePeriod === compliancePeriod)
+        .filter((item) => item.seriesCode === seriesCode && item.compliancePeriod === compliancePeriod &&
+          (vintageYear === undefined || item.vintageYear === vintageYear))
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
         .map((item) => this.getMemoryBundle(item.settlementId));
     }
     const rows = await this.pool.query<SettlementRow>(
       `SELECT * FROM settlement_instructions WHERE series_code=$1 AND compliance_period=$2
-       ORDER BY created_at, settlement_id`, [seriesCode, compliancePeriod],
+       AND ($3::integer IS NULL OR vintage_year=$3)
+       ORDER BY created_at, settlement_id`, [seriesCode, compliancePeriod, vintageYear ?? null],
     );
     return Promise.all(rows.rows.map((row) => this.getDbBundle(this.pool!, row.settlement_id)));
   }
@@ -831,7 +840,11 @@ export class SettlementService implements OnModuleDestroy {
 
   private mapSettlement(row: SettlementRow): SettlementInstruction {
     return { settlementId: row.settlement_id, tradeId: row.trade_id, buyerParticipantId: row.buyer_participant_id,
-      sellerParticipantId: row.seller_participant_id, seriesCode: row.series_code,
+      sellerParticipantId: row.seller_participant_id,
+      buyerInstallationId: row.buyer_installation_id,
+      sellerInstallationId: row.seller_installation_id,
+      vintageYear: row.vintage_year,
+      seriesCode: row.series_code,
       compliancePeriod: row.compliance_period, quantity: this.number(row.quantity), cashAmount: this.number(row.cash_amount),
       settlementType: row.settlement_type, status: row.status, rulesetId: row.ruleset_id,
       correlationId: row.correlation_id, ...(row.failure_reason ? { failureReason: row.failure_reason } : {}),

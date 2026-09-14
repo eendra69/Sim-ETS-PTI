@@ -14,6 +14,15 @@ export class CreateOrderDto {
   @IsString()
   seriesCode!: string;
 
+  @IsString()
+  @MaxLength(80)
+  installationId!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(2000)
+  vintageYear!: number;
+
   @Type(() => Number)
   @IsInt()
   @Min(2000)

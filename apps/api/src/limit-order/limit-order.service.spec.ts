@@ -19,6 +19,8 @@ describe('LimitOrderService', () => {
     quantity = 5_000,
   ): CreateOrderDto => ({
     participantId,
+    installationId: `INST-${participantId.slice(-1)}-01`,
+    vintageYear: 2027,
     clientOrderId,
     seriesCode: 'PTBAE-IND',
     compliancePeriod: 2027,
@@ -37,6 +39,8 @@ describe('LimitOrderService', () => {
     protectionPrice: number,
   ): CreateOrderDto => ({
     participantId,
+    installationId: `INST-${participantId.slice(-1)}-01`,
+    vintageYear: 2027,
     clientOrderId,
     seriesCode: 'PTBAE-IND',
     compliancePeriod: 2027,
@@ -56,6 +60,8 @@ describe('LimitOrderService', () => {
     protectionPrice: number,
   ): CreateOrderDto => ({
     participantId,
+    installationId: `INST-${participantId.slice(-1)}-01`,
+    vintageYear: 2027,
     clientOrderId,
     seriesCode: 'PTBAE-IND',
     compliancePeriod: 2027,
@@ -85,6 +91,31 @@ describe('LimitOrderService', () => {
       { price: 68_000, quantity: 5_000, orderCount: 1 },
       { price: 70_000, quantity: 10_000, orderCount: 2 },
     ]);
+  });
+
+  it('isolates order books and trades by vintage', async () => {
+    await service.submit({ ...sell('IND-A', 'ASK-V2024', 70_000), vintageYear: 2024 });
+    const differentVintage = await service.submit({
+      ...sell('IND-D', 'BID-V2025', 70_000),
+      side: 'BUY',
+      vintageYear: 2025,
+    });
+
+    expect(differentVintage.status).toBe('OPEN');
+    expect((await service.getOrderBook('PTBAE-IND', 2027, 2024)).asks).toHaveLength(1);
+    expect((await service.getOrderBook('PTBAE-IND', 2027, 2024)).bids).toHaveLength(0);
+    expect((await service.getOrderBook('PTBAE-IND', 2027, 2025)).bids).toHaveLength(1);
+
+    const sameVintage = await service.submit({
+      ...sell('IND-D', 'BID-V2024', 70_000),
+      side: 'BUY',
+      vintageYear: 2024,
+    });
+    expect(sameVintage.status).toBe('FILLED');
+    await expect(service.listTrades('PTBAE-IND', 2027, 2024)).resolves.toEqual([
+      expect.objectContaining({ vintageYear: 2024 }),
+    ]);
+    await expect(service.listTrades('PTBAE-IND', 2027, 2025)).resolves.toEqual([]);
   });
 
   it('sorts bids from highest price and reserves the maximum notional', async () => {

@@ -50,6 +50,7 @@ describe('Position and balance API', () => {
         .set('x-api-key', 'uat-trader-key-at-least-16-characters')
         .send({
           participantId: 'IND-B', clientOrderId: 'E2E-SCOPE-REJECT',
+          installationId: 'INST-B-01', vintageYear: 2025,
           seriesCode: 'PTBAE-IND', compliancePeriod: 2027,
           side: 'SELL', orderType: 'LIMIT', quantity: 1_000,
           limitPrice: 75_000, timeInForce: 'DAY',
@@ -126,6 +127,8 @@ describe('Position and balance API', () => {
       .post('/api/v1/orders')
       .send({
         participantId: 'IND-A',
+        installationId: 'INST-A-01',
+        vintageYear: 2024,
         clientOrderId: 'E2E-LIMIT-1',
         seriesCode: 'PTBAE-IND',
         compliancePeriod: 2027,
@@ -155,6 +158,8 @@ describe('Position and balance API', () => {
   it('rejects LIMIT orders with a missing price or STOP-only fields', async () => {
     const baseline = {
       participantId: 'IND-A',
+      installationId: 'INST-A-01',
+      vintageYear: 2024,
       seriesCode: 'PTBAE-IND',
       compliancePeriod: 2027,
       side: 'SELL',
@@ -193,6 +198,8 @@ describe('Position and balance API', () => {
       .send({
         ...baseOrder,
         participantId: 'IND-A',
+        installationId: 'INST-A-01',
+        vintageYear: 2024,
         clientOrderId: 'E2E-MATCH-SELL',
         side: 'SELL',
       })
@@ -204,6 +211,8 @@ describe('Position and balance API', () => {
       .send({
         ...baseOrder,
         participantId: 'IND-D',
+        installationId: 'INST-D-01',
+        vintageYear: 2024,
         clientOrderId: 'E2E-MATCH-BUY',
         side: 'BUY',
       })
@@ -216,7 +225,10 @@ describe('Position and balance API', () => {
     expect(trades.body).toEqual([
       expect.objectContaining({
         buyerParticipantId: 'IND-D',
+        buyerInstallationId: 'INST-D-01',
         sellerParticipantId: 'IND-A',
+        sellerInstallationId: 'INST-A-01',
+        vintageYear: 2024,
         quantity: 1_000,
         price: 70_000,
       }),
@@ -231,6 +243,8 @@ describe('Position and balance API', () => {
   it('applies IOC semantics to a protected MARKET order on an empty book', async () => {
     const command = {
       participantId: 'IND-D',
+      installationId: 'INST-D-01',
+      vintageYear: 2024,
       clientOrderId: 'E2E-EMPTY-MARKET',
       seriesCode: 'PTBAE-IND',
       compliancePeriod: 2027,
@@ -260,6 +274,8 @@ describe('Position and balance API', () => {
       .post('/api/v1/orders')
       .send({
         participantId: 'IND-D',
+        installationId: 'INST-D-01',
+        vintageYear: 2024,
         clientOrderId: 'E2E-INVALID-MARKET',
         seriesCode: 'PTBAE-IND',
         compliancePeriod: 2027,
@@ -280,6 +296,8 @@ describe('Position and balance API', () => {
       .post('/api/v1/orders')
       .send({
         participantId: 'IND-D',
+        installationId: 'INST-D-01',
+        vintageYear: 2024,
         clientOrderId: 'E2E-PENDING-STOP',
         seriesCode: 'PTBAE-IND',
         compliancePeriod: 2027,
@@ -316,6 +334,8 @@ describe('Position and balance API', () => {
       .post('/api/v1/orders')
       .send({
         participantId: 'IND-D',
+        installationId: 'INST-D-01',
+        vintageYear: 2024,
         clientOrderId: 'E2E-EXACT-STOP',
         seriesCode: 'PTBAE-IND',
         compliancePeriod: 2027,
@@ -332,21 +352,22 @@ describe('Position and balance API', () => {
     const base = {
       seriesCode: 'PTBAE-IND',
       compliancePeriod: 2027,
+      vintageYear: 2024,
       orderType: 'LIMIT',
       limitPrice: 78_000,
       timeInForce: 'DAY',
     };
     await request(app.getHttpServer())
       .post('/api/v1/orders')
-      .send({ ...base, participantId: 'IND-A', clientOrderId: 'E2E-TRIGGER-SOURCE', side: 'SELL', quantity: 1_000 })
+      .send({ ...base, participantId: 'IND-A', installationId: 'INST-A-01', clientOrderId: 'E2E-TRIGGER-SOURCE', side: 'SELL', quantity: 1_000 })
       .expect(201);
     await request(app.getHttpServer())
       .post('/api/v1/orders')
-      .send({ ...base, participantId: 'IND-B', clientOrderId: 'E2E-TRIGGER-LIQUIDITY', side: 'SELL', quantity: 2_000 })
+      .send({ ...base, participantId: 'IND-A', installationId: 'INST-A-01', clientOrderId: 'E2E-TRIGGER-LIQUIDITY', side: 'SELL', quantity: 2_000 })
       .expect(201);
     await request(app.getHttpServer())
       .post('/api/v1/orders')
-      .send({ ...base, participantId: 'IND-D', clientOrderId: 'E2E-TRIGGER-TAKER', side: 'BUY', quantity: 1_000 })
+      .send({ ...base, participantId: 'IND-D', installationId: 'INST-D-01', clientOrderId: 'E2E-TRIGGER-TAKER', side: 'BUY', quantity: 1_000 })
       .expect(201);
 
     const updated = await request(app.getHttpServer())
@@ -477,7 +498,7 @@ describe('Position and balance API', () => {
     await request(app.getHttpServer()).post('/api/v1/market-sessions/PTBAE-IND-2027-REGULAR/halt')
       .send({ ...command, idempotencyKey: 'E2E-SESSION-HALT' }).expect(201);
     const blocked = await request(app.getHttpServer()).post('/api/v1/orders').send({
-      participantId:'IND-C',clientOrderId:'E2E-HALTED-ORDER',seriesCode:'PTBAE-IND',compliancePeriod:2027,
+      participantId:'IND-C',installationId:'INST-C-01',vintageYear:2026,clientOrderId:'E2E-HALTED-ORDER',seriesCode:'PTBAE-IND',compliancePeriod:2027,
       side:'SELL',orderType:'LIMIT',quantity:1_000,limitPrice:80_000,timeInForce:'DAY',
     }).expect(409);
     expect(blocked.body.code).toBe('MARKET-HALTED');
