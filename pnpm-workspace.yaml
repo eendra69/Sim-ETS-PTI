@@ -7,4 +7,4 @@ onlyBuiltDependencies:
 overrides:
   multer: 2.3.0
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
