@@ -5,7 +5,7 @@ services:
     plan: free
     branch: feature/uat-production-readiness
     autoDeployTrigger: checksPass
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @sim-ets/api build
+    buildCommand: pnpm --filter @sim-ets/api build
     startCommand: node apps/api/scripts/database-bootstrap.mjs && pnpm --filter @sim-ets/api start
     healthCheckPath: /api/v1/health/ready
     envVars:
@@ -31,7 +31,7 @@ services:
     runtime: static
     branch: feature/uat-production-readiness
     autoDeployTrigger: checksPass
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @sim-ets/web build
+    buildCommand: pnpm --filter @sim-ets/web build
     staticPublishPath: apps/web/dist
     envVars:
       - key: VITE_API_BASE_URL
