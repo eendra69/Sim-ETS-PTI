@@ -9,22 +9,39 @@ import type {
   MarketSession,
   OrderBook,
   PositionSnapshot,
+  ProductSeriesCatalogueItem,
+  QuotaVintage,
   ScenarioDefinition,
   ScenarioRun,
   SettlementBundle,
   StopOrder,
   SurveillanceAlert,
   Trade,
+  TraderInstallationScope,
   TriggerBook,
+  VintageHolding,
 } from '../api/types';
+import type { WorkspaceView } from '../app/navigation';
 import { getSessionApiKey, setSessionApiKey } from '../auth/api-key';
 import { FeedbackBanners } from '../components/FeedbackBanners';
 import { AppShell } from '../layout/AppShell';
+import { ParticipantsPage } from './ParticipantsPage';
+import { ProductSeriesPage } from './ProductSeriesPage';
 import { money, number, priceOrDash, signed } from '../shared/format';
 
-export function MarketDashboardPage() {
+interface MarketDashboardPageProps {
+  view: WorkspaceView;
+}
+
+export function MarketDashboardPage({ view }: MarketDashboardPageProps) {
   const [positions, setPositions] = useState<PositionSnapshot[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);
+  const [productSeries, setProductSeries] = useState<ProductSeriesCatalogueItem[]>([]);
+  const [vintages, setVintages] = useState<QuotaVintage[]>([]);
+  const [holdings, setHoldings] = useState<VintageHolding[]>([]);
+  const [traderScopes, setTraderScopes] = useState<TraderInstallationScope[]>([]);
+  const [catalogTargetPeriod, setCatalogTargetPeriod] = useState(2027);
+  const [catalogLoading, setCatalogLoading] = useState(true);
   const [apiKeyInput, setApiKeyInput] = useState(getSessionApiKey);
   const [positionPeriod, setPositionPeriod] = useState(2025);
   const [activeRuleset, setActiveRuleset] = useState<GovernedRuleset>();
@@ -55,6 +72,7 @@ export function MarketDashboardPage() {
   const [scenarios, setScenarios] = useState<ScenarioDefinition[]>([]);
   const [lastScenarioRun, setLastScenarioRun] = useState<ScenarioRun>();
   const [error, setError] = useState<string>();
+  const [catalogError, setCatalogError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [participantId, setParticipantId] = useState('IND-A');
@@ -69,9 +87,8 @@ export function MarketDashboardPage() {
   const refresh = useCallback(async () => {
     try {
       const currentRuleset = await api<GovernedRuleset>('/market-rulesets/current');
-      const [nextPositions, nextInstallations, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements, nextRulesets, nextSession, nextAudit, nextAlerts, nextScenarios] = await Promise.all([
+      const [nextPositions, nextBook, nextTrades, nextTriggerBook, nextMarketData, nextSettlements, nextRulesets, nextSession, nextAudit, nextAlerts, nextScenarios] = await Promise.all([
         api<PositionSnapshot[]>(`/positions?seriesCode=PTBAE-IND&compliancePeriod=${positionPeriod}`),
-        api<Installation[]>('/installations'),
         api<OrderBook>('/order-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<Trade[]>('/trades?seriesCode=PTBAE-IND&compliancePeriod=2027'),
         api<TriggerBook>('/trigger-book?seriesCode=PTBAE-IND&compliancePeriod=2027'),
@@ -84,7 +101,6 @@ export function MarketDashboardPage() {
         api<ScenarioDefinition[]>('/scenarios'),
       ]);
       setPositions(nextPositions);
-      setInstallations(nextInstallations);
       setActiveRuleset(currentRuleset);
       setBook(nextBook);
       setTrades(nextTrades);
@@ -102,9 +118,36 @@ export function MarketDashboardPage() {
     }
   }, [positionPeriod]);
 
+  const refreshCatalog = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
+      const [nextInstallations, nextProductSeries, nextVintages, nextHoldings, nextTraderScopes] = await Promise.all([
+        api<Installation[]>('/installations'),
+        api<ProductSeriesCatalogueItem[]>('/product-series'),
+        api<QuotaVintage[]>(`/quota-vintages?seriesCode=PTBAE-IND&targetCompliancePeriod=${catalogTargetPeriod}`),
+        api<VintageHolding[]>(`/vintage-holdings?seriesCode=PTBAE-IND&targetCompliancePeriod=${catalogTargetPeriod}`),
+        api<TraderInstallationScope[]>('/trader-installation-scopes'),
+      ]);
+      setInstallations(nextInstallations);
+      setProductSeries(nextProductSeries);
+      setVintages(nextVintages);
+      setHoldings(nextHoldings);
+      setTraderScopes(nextTraderScopes);
+      setCatalogError(undefined);
+    } catch (reason) {
+      setCatalogError(reason instanceof Error ? reason.message : 'Tidak dapat memuat katalog');
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, [catalogTargetPeriod]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    void refreshCatalog();
+  }, [refreshCatalog]);
 
   useEffect(() => {
     if (positions.length && !positions.some((position) => position.participantId === participantId)) {
@@ -124,6 +167,7 @@ export function MarketDashboardPage() {
     const applied = setSessionApiKey(apiKeyInput);
     setNotice(applied ? 'API key diterapkan untuk sesi browser ini.' : 'API key sesi dihapus.');
     void refresh();
+    void refreshCatalog();
   }
 
   async function submitOrder(event: FormEvent<HTMLFormElement>) {
@@ -322,7 +366,7 @@ export function MarketDashboardPage() {
       participantId={participantId}
       installationId={currentInstallation?.installationId}
       positionPeriod={positionPeriod}
-      targetCompliancePeriod={activeRuleset?.compliancePeriod ?? 2027}
+      targetCompliancePeriod={view === 'market' ? activeRuleset?.compliancePeriod ?? 2027 : catalogTargetPeriod}
       sessionStatus={marketSession?.status}
       referencePrice={marketData.referencePrice}
       lastTradedPrice={marketData.lastTradedPrice}
@@ -338,6 +382,28 @@ export function MarketDashboardPage() {
         </div>
       )}
     >
+      <FeedbackBanners error={catalogError ?? error} notice={notice} />
+      {view === 'participants' ? (
+        <ParticipantsPage
+          installations={installations}
+          positions={positions}
+          traderScopes={traderScopes}
+          holdings={holdings}
+          positionPeriod={positionPeriod}
+          targetCompliancePeriod={catalogTargetPeriod}
+          loading={catalogLoading}
+        />
+      ) : view === 'product-series' ? (
+        <ProductSeriesPage
+          series={productSeries}
+          vintages={vintages}
+          holdings={holdings}
+          targetCompliancePeriod={catalogTargetPeriod}
+          onTargetCompliancePeriodChange={setCatalogTargetPeriod}
+          loading={catalogLoading}
+        />
+      ) : (
+      <>
       <header className="view-header" id="regular-market">
         <div>
           <h1>Pasar Reguler</h1>
@@ -351,8 +417,6 @@ export function MarketDashboardPage() {
         <article><span>Available buy need</span><strong>{number.format(totals.demand)}</strong><small>tCO₂e kebutuhan tersisa</small></article>
         <article><span>Executed volume</span><strong>{number.format(marketData.statistics.volume)}</strong><small>{marketData.state === 'TRADING' ? `LTP ${priceOrDash(marketData.lastTradedPrice)}` : 'NO TRADES · LTP belum terbentuk'}</small></article>
       </section>
-
-      <FeedbackBanners error={error} notice={notice} />
 
       <section className="panel orders-panel anchor-section" id="ruleset">
         <div className="panel-heading compact"><div><p className="eyebrow">MARKET CONTROL</p><h2>Ruleset & session</h2></div><button className="ghost" disabled={busy} onClick={() => void createRulesetDraft()}>Clone active to draft</button></div>
@@ -429,6 +493,8 @@ export function MarketDashboardPage() {
       </section>
 
       <footer>Default simulator · Bukan penetapan ketentuan resmi pasar</footer>
+      </>
+      )}
     </AppShell>
   );
 }

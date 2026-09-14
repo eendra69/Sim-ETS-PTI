@@ -180,6 +180,8 @@ export interface ProductAdmission {
   fungibilityKey: string;
   crossVintageMatching: boolean;
   status: 'ACTIVE' | 'SUSPENDED' | 'EXPIRED' | 'PLANNED';
+  effectiveFrom: string;
+  expiresAt?: string;
   policySource: string;
   policyCertainty: 'OFFICIAL' | 'FIXED_PROJECT' | 'SIMULATION_ASSUMPTION';
 }
@@ -199,6 +201,8 @@ export interface QuotaVintage {
   seriesCode: string;
   vintageYear: number;
   displayLabel: string;
+  effectiveFrom: string;
+  expiresAt?: string;
   bankingStatus: 'CURRENT_YEAR' | 'BANKED_AVAILABLE' | 'RESTRICTED' | 'EXPIRED' | 'PLAN_SEED';
   status: 'ACTIVE' | 'SUSPENDED' | 'EXPIRED' | 'PLANNED';
   policySource: string;
@@ -216,6 +220,20 @@ export interface Installation {
   dataOrigin: 'UNSPECIFIED' | 'OFFICIAL' | 'SYNTHETIC';
 }
 
+export interface TraderInstallationScope {
+  traderAccountId: string;
+  participantId: string;
+  displayName: string;
+  installationId: string;
+  status: 'ACTIVE' | 'INACTIVE';
+}
+
+export interface ProductSeriesCatalogueItem {
+  seriesCode: string;
+  unit: string;
+  status: 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
+}
+
 export interface VintageHolding {
   vintageHoldingId: string;
   participantId: string;
@@ -223,10 +241,18 @@ export interface VintageHolding {
   seriesCode: string;
   vintageYear: number;
   totalUnits: number;
+  lockedUnits: number;
+  surrenderedUnits: number;
+  reservedSell: number;
+  executedSellPending: number;
   availableUnits: number;
   tradableAvailableUnits: number;
   eligibleForTargetPeriod?: boolean;
   targetCompliancePeriod?: number;
   sourceStatus: 'PROJECTED' | 'PROVISIONAL' | 'VERIFIED';
+  status: 'ACTIVE' | 'LOCKED' | 'EXHAUSTED';
+  dataOrigin: 'UNSPECIFIED' | 'OFFICIAL' | 'SYNTHETIC';
   provenanceType: 'ALLOCATION' | 'TRADE_RECEIPT' | 'MIGRATED_AGGREGATE' | 'SYNTHETIC_DERIVED';
+  sourceReference?: string;
+  version: number;
 }

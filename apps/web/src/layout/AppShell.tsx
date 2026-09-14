@@ -1,4 +1,5 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
+import { navigationLabelFromHash } from '../app/navigation';
 import { money, number, priceOrDash } from '../shared/format';
 
 interface AppShellProps {
@@ -45,8 +46,8 @@ const navigation: Array<{ label: string; items: NavItem[] }> = [
   {
     label: 'Market Operations',
     items: [
-      { label: 'Participants', icon: 'A' },
-      { label: 'Product & Series', icon: 'B' },
+      { label: 'Participants', icon: 'A', target: 'participants' },
+      { label: 'Product & Series', icon: 'B', target: 'product-series' },
       { label: 'Ruleset', icon: 'V', target: 'ruleset' },
       { label: 'Surveillance', icon: '!', target: 'surveillance' },
       { label: 'Audit Trail', icon: 'L', target: 'audit' },
@@ -69,7 +70,13 @@ export function AppShell({
   rulesetVersion,
   authControl,
 }: AppShellProps) {
-  const [activeItem, setActiveItem] = useState('Pasar Reguler');
+  const [activeItem, setActiveItem] = useState(() => navigationLabelFromHash(window.location.hash));
+
+  useEffect(() => {
+    const updateActiveItem = () => setActiveItem(navigationLabelFromHash(window.location.hash));
+    window.addEventListener('hashchange', updateActiveItem);
+    return () => window.removeEventListener('hashchange', updateActiveItem);
+  }, []);
 
   return (
     <div className="app-shell">
