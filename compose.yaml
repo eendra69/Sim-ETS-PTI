@@ -23,6 +23,8 @@ services:
       - ./database/seeds/002_governance.sql:/docker-entrypoint-initdb.d/22-governance.sql:ro
       - ./database/migrations/009_compliance_data_provenance.sql:/docker-entrypoint-initdb.d/23-compliance-data-provenance.sql:ro
       - ./database/seeds/003_synthetic_compliance_2024_2026.sql:/docker-entrypoint-initdb.d/24-synthetic-compliance.sql:ro
+      - ./database/migrations/010_vintage_installation_catalog.sql:/docker-entrypoint-initdb.d/25-vintage-installation-catalog.sql:ro
+      - ./database/seeds/004_vintage_installation_2024_2027.sql:/docker-entrypoint-initdb.d/26-vintage-installation-seed.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sim_ets} -d ${POSTGRES_DB:-sim_ets}"]
       interval: 5s

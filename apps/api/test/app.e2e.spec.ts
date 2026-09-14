@@ -77,6 +77,35 @@ describe('Position and balance API', () => {
     );
   });
 
+  it('exposes vintage, admission, installation, and eligibility as separate concepts', async () => {
+    const vintages = await request(app.getHttpServer())
+      .get('/api/v1/quota-vintages?seriesCode=PTBAE-IND&targetCompliancePeriod=2027')
+      .expect(200);
+    expect(vintages.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        vintageYear: 2024,
+        eligibility: expect.objectContaining({ targetCompliancePeriod: 2027, eligible: true }),
+        admission: expect.objectContaining({
+          fungibilityKey: 'PTBAE-IND:V2024:REG',
+          crossVintageMatching: false,
+        }),
+      }),
+      expect.objectContaining({ vintageYear: 2026 }),
+    ]));
+
+    const installations = await request(app.getHttpServer())
+      .get('/api/v1/installations?participantId=IND-D')
+      .expect(200);
+    expect(installations.body).toEqual([
+      expect.objectContaining({ participantId: 'IND-D', installationId: 'INST-D-01' }),
+    ]);
+
+    const noRule = await request(app.getHttpServer())
+      .get('/api/v1/vintage-eligibility?seriesCode=PTBAE-IND&vintageYear=2025&targetCompliancePeriod=2026')
+      .expect(200);
+    expect(noRule.body).toMatchObject({ eligible: false, policySource: 'NO_RULE' });
+  });
+
   it('rejects a sell reservation above verified surplus', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/v1/balance-reservations/sell')

@@ -18,6 +18,10 @@ Dataset ini dibuat untuk UAT Simulator Regular Market PTBAE-IND. Seluruh peserta
 - `compliance_positions_2024_2026.csv`: input kuota, emisi, banking, offset, holding, dan buying capacity.
 - `expected_positions_2024_2026.csv`: expected result perhitungan posisi.
 - `negative_cases_2024_2026.csv`: kasus yang harus ditolak importer.
+
+Setelah seed kepatuhan dimuat, `database/seeds/004_vintage_installation_2024_2027.sql` membentuk installation, trader scope, katalog vintage, eligibility, dan holding sintetis. Holding hanya berasal dari surplus bruto pada tahun yang sama. Kolom agregat `eligible_banked_units` sengaja tidak dikonversi menjadi vintage tertentu karena dataset tidak menyimpan tahun asalnya.
+
+Semua aturan carry-over/banking pada seed katalog diberi `SIMULATION_ASSUMPTION`. Data 2026 tetap `PROVISIONAL`; karena itu nilai holding dapat terlihat untuk analisis tetapi belum menjadi kuantitas yang dapat dijual.
 - `dataset-summary.json`: kontrol jumlah record, total tahunan, dan SHA-256 dataset.
 - `generate-dataset.mjs`: generator deterministik.
 
@@ -41,4 +45,3 @@ pnpm db:seed:synthetic
 ```
 
 Seed bersifat idempotent. Import ulang memperbarui input kepatuhan sintetis tetapi tidak menimpa pembelian/penjualan acknowledged atau balance account yang sudah memiliki aktivitas transaksi.
-

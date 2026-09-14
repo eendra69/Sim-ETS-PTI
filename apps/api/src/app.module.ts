@@ -9,6 +9,7 @@ import { PositionBalanceModule } from './position-balance/position-balance.modul
 import { SettlementModule } from './settlement/settlement.module';
 import { ScenarioModule } from './scenario/scenario.module';
 import { PlatformModule } from './platform/platform.module';
+import { ProductCatalogModule } from './product-catalog/product-catalog.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { PlatformModule } from './platform/platform.module';
       envFilePath: [join(process.cwd(), '.env'), join(process.cwd(), '../../.env')],
     }),
     PlatformModule,
+    ProductCatalogModule,
     PositionBalanceModule,
     GovernanceModule,
     LimitOrderModule,

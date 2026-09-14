@@ -92,6 +92,25 @@ pnpm db:down
 
 Dataset UAT deterministik tersedia di `data/synthetic`. Isinya mencakup 42 peserta anonim dari tujuh arketipe usaha dan 126 posisi tahunan. Data 2024–2025 berstatus `VERIFIED` sintetis, sedangkan 2026 berstatus `PROVISIONAL`. Seluruh record memiliki provenance `SYNTHETIC`, source reference unik, dan hash dataset.
 
+## Katalog vintage dan instalasi
+
+Model katalog memisahkan tahun asal unit (`vintageYear`) dari periode kepatuhan tujuan (`targetCompliancePeriod`). Vintage 2024–2026 dan seed simulasi 2027 memiliki product admission serta fungibility key tersendiri; cross-vintage matching dinonaktifkan. Aturan banking/eligibility yang belum bersumber dari ketentuan resmi selalu diberi `policyCertainty: SIMULATION_ASSUMPTION`.
+
+Holding sintetis per vintage diturunkan hanya dari surplus bruto tahun asal. Nilai agregat `eligible_banked_units` tidak ditebak asal tahunnya dan tidak dimaterialisasi sebagai holding vintage. Holding dengan sumber `PROVISIONAL`, termasuk data sintetis 2026, memiliki `tradableAvailableUnits: 0` walaupun vintage produknya eligible untuk periode tujuan.
+
+Endpoint baca katalog:
+
+- `GET /api/v1/product-series`
+- `GET /api/v1/quota-vintages?seriesCode=PTBAE-IND&targetCompliancePeriod=2027`
+- `GET /api/v1/quota-vintages/:vintageId?targetCompliancePeriod=2027`
+- `GET /api/v1/product-admissions?seriesCode=PTBAE-IND&vintageYear=2026`
+- `GET /api/v1/vintage-eligibility?seriesCode=PTBAE-IND&vintageYear=2024&targetCompliancePeriod=2027`
+- `GET /api/v1/installations?participantId=IND-D`
+- `GET /api/v1/trader-installation-scopes?participantId=IND-D`
+- `GET /api/v1/vintage-holdings?participantId=IND-D&seriesCode=PTBAE-IND&targetCompliancePeriod=2027`
+
+Kontrak order/trade lama masih menggunakan `compliancePeriod` untuk menjaga kompatibilitas. Propagasi `vintageYear` dan installation lineage ke matching serta settlement dilakukan pada lapisan implementasi berikutnya; UI baru belum boleh menganggap tahun periode sebagai vintage secara implisit.
+
 Generator menghasilkan master peserta, input kepatuhan, expected result, negative test cases, ringkasan kontrol, serta SQL seed. Menjalankan seed berulang kali tidak menggandakan record, menaikkan version tanpa perubahan, atau menimpa saldo transaksi yang sudah aktif.
 
 ```bash
