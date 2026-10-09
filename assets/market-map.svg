@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 320" role="img" aria-labelledby="title desc">
+  <title id="title">ETS market process map</title>
+  <desc id="desc">A compact visual map of order, trade, settlement, registry, reconciliation, and position update flow.</desc>
+  <rect width="960" height="320" fill="#f7faf9"/>
+  <path d="M88 160h770" stroke="#9aa8a1" stroke-width="4" stroke-linecap="round" stroke-dasharray="14 12"/>
+  <g fill="#ffffff" stroke="#29453d" stroke-width="3">
+    <rect x="36" y="92" width="132" height="136" rx="8"/>
+    <rect x="202" y="92" width="132" height="136" rx="8"/>
+    <rect x="368" y="92" width="132" height="136" rx="8"/>
+    <rect x="534" y="92" width="132" height="136" rx="8"/>
+    <rect x="700" y="92" width="132" height="136" rx="8"/>
+  </g>
+  <g fill="#0e2b25" font-family="Arial, sans-serif" font-size="18" font-weight="700">
+    <text x="102" y="136" text-anchor="middle">ORDER</text>
+    <text x="268" y="136" text-anchor="middle">MATCH</text>
+    <text x="434" y="136" text-anchor="middle">SETTLE</text>
+    <text x="600" y="136" text-anchor="middle">SRUK</text>
+    <text x="766" y="136" text-anchor="middle">POSITION</text>
+  </g>
+  <g fill="#54766a" font-family="Arial, sans-serif" font-size="13">
+    <text x="102" y="166" text-anchor="middle">LIMIT</text>
+    <text x="102" y="186" text-anchor="middle">MARKET</text>
+    <text x="102" y="206" text-anchor="middle">STOP</text>
+    <text x="268" y="176" text-anchor="middle">price-time</text>
+    <text x="434" y="176" text-anchor="middle">T+0 DvP</text>
+    <text x="600" y="176" text-anchor="middle">ACK</text>
+    <text x="766" y="176" text-anchor="middle">reconciled</text>
+  </g>
+  <g fill="#1f7a4d">
+    <circle cx="184" cy="160" r="10"/>
+    <circle cx="350" cy="160" r="10"/>
+    <circle cx="516" cy="160" r="10"/>
+    <circle cx="682" cy="160" r="10"/>
+    <path d="M858 160l-22-13v26z"/>
+  </g>
+  <rect x="44" y="36" width="164" height="30" rx="15" fill="#dff6ea" stroke="#85b79a"/>
+  <text x="126" y="57" text-anchor="middle" fill="#174532" font-family="Arial, sans-serif" font-size="13" font-weight="700">SIMULASI</text>
+</svg>
